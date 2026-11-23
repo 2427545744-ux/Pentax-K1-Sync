@@ -47,16 +47,18 @@ class WifiNetworkBinder(context: Context) {
         return _boundNetwork.value?.socketFactory ?: SocketFactory.getDefault()
     }
 
-    fun getDns(): Dns = Dns { hostname ->
-        val net = _boundNetwork.value
-        if (net != null) {
-            try {
-                net.getAllByName(hostname).toList()
-            } catch (_: Exception) {
+   fun getDns(): Dns = object : Dns {
+        override fun lookup(hostname: String): List<InetAddress> {
+            val net = _boundNetwork.value
+            return if (net != null) {
+                try {
+                    net.getAllByName(hostname).toList()
+                } catch (_: Exception) {
+                    InetAddress.getAllByName(hostname).toList()
+                }
+            } else {
                 InetAddress.getAllByName(hostname).toList()
             }
-        } else {
-            InetAddress.getAllByName(hostname).toList()
         }
     }
 
