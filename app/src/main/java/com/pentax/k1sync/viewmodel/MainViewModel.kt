@@ -1251,6 +1251,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+private fun scaleBitmapToMaxEdge(src: Bitmap, maxLongEdge: Int): Bitmap {
+        val longEdge = maxOf(src.width, src.height)
+        if (longEdge <= maxLongEdge) return src
+        val scale = maxLongEdge.toFloat() / longEdge.toFloat()
+        val dstW = (src.width * scale).roundToInt().coerceAtLeast(16)
+        val dstH = (src.height * scale).roundToInt().coerceAtLeast(16)
+        return Bitmap.createScaledBitmap(src, dstW, dstH, true)
+    }
+
     private suspend fun ensureSpektraPreviewSessionOpened(state: WatermarkEditorState): Long = withContext(Dispatchers.IO) {
         if (!ensureSpektraEngineReady()) return@withContext 0L
         val p = state.spektraParams
@@ -1258,7 +1267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val desiredKey = if (state.isRawSource && !state.sourceRawPath.isNullOrBlank()) {
             "raw_half:${state.sourceRawPath}:$wbKey"
         } else {
-            "bmp:${System.identityHashCode(state.sourceBitmap)}:${state.sourceFileName}"
+            "bmp1600:${System.identityHashCode(state.sourceBitmap)}:${state.sourceFileName}"
         }
 
         if (spektraSessionHandle != 0L && spektraSessionSourceKey == desiredKey) {
@@ -1280,7 +1289,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
         } else {
             val bmp = state.sourceBitmap ?: return@withContext 0L
-            SpektraNativeBridge.nativeOpenBitmap(bmp, paramsJson)
+            // Cap preview bitmap to 1600px long edge (~1.7MP) so mobile Vulkan never exceeds 65535 1D workgroups
+            val previewInput = scaleBitmapToMaxEdge(bmp, 1600)
+            try {
+                SpektraNativeBridge.nativeOpenBitmap(previewInput, paramsJson)
+            } finally {
+                if (previewInput !== bmp) previewInput.recycle()
+            }
         }
 
         if (handle == 0L) {
@@ -1722,46 +1737,56 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (_: Exception) { "" }
     }
 
-    private suspend fun renderSpektraStage(state: WatermarkEditorState, isExport: Boolean): Bitmap? =
+private suspend fun renderSpektraStage(state: WatermarkEditorState, isExport: Boolean): Bitmap? =
         withContext(Dispatchers.IO) {
-            // Dual-Channel RAW Export: For full-resolution RAW export, open a dedicated 36.4MP full-size LibRaw session,
-            // render tier = "full", and immediately free it so mobile RAM stays lean!
-            if (isExport && state.isRawSource && !state.sourceRawPath.isNullOrBlank() && state.config.highQualityExport) {
+            if (isExport) {
                 if (!ensureSpektraEngineReady()) return@withContext null
                 val p = state.spektraParams
-                _watermarkState.update { it.copy(spektraStatusText = "LibRaw 全尺寸 36.4MP 解码与 81 波长渲染中...") }
-                val fullHandle = SpektraNativeBridge.nativeOpenRawFile(
-                    filePath = state.sourceRawPath,
-                    useHeadroom = true,
-                    halfSize = false,
-                    useCustomWb = p.rawCustomWb,
-                    tempKelvin = p.rawTempKelvin.toDouble(),
-                    tint = p.rawTint.toDouble(),
-                    paramsJson = p.toEngineJson()
-                )
-                if (fullHandle == 0L) {
-                    val err = SpektraNativeBridge.nativeGetLastError().ifBlank { "全尺寸 RAW 解码失败" }
+                val exportHandle = if (state.isRawSource && !state.sourceRawPath.isNullOrBlank()) {
+                    // Use halfSize=true (~9MP) on mobile Vulkan to stay safely under 65535 1D workgroups
+                    _watermarkState.update { it.copy(spektraStatusText = "LibRaw 高清解码与 81 波长渲染中...") }
+                    SpektraNativeBridge.nativeOpenRawFile(
+                        filePath = state.sourceRawPath,
+                        useHeadroom = false,
+                        halfSize = true,
+                        useCustomWb = p.rawCustomWb,
+                        tempKelvin = p.rawTempKelvin.toDouble(),
+                        tint = p.rawTint.toDouble(),
+                        paramsJson = p.toEngineJson()
+                    )
+                } else {
+                    val bmp = state.sourceBitmap ?: return@withContext null
+                    // 4600px long edge (~14MP) stays strictly below 65535*256 mobile Vulkan 1D limit
+                    val targetEdge = if (state.config.highQualityExport) 4600 else 2560
+                    val exportInput = scaleBitmapToMaxEdge(bmp, targetEdge)
+                    try {
+                        SpektraNativeBridge.nativeOpenBitmap(exportInput, p.toEngineJson())
+                    } finally {
+                        if (exportInput !== bmp) exportInput.recycle()
+                    }
+                }
+                if (exportHandle == 0L) {
+                    val err = SpektraNativeBridge.nativeGetLastError().ifBlank { "暗房导出会话打开失败" }
                     _watermarkState.update { it.copy(spektraError = err) }
                     return@withContext null
                 }
                 return@withContext try {
-                    SpektraNativeBridge.nativeRenderToBitmap(fullHandle, "full", reprintOnly = false)
+                    SpektraNativeBridge.nativeRenderToBitmap(exportHandle, "full", reprintOnly = false)
                 } finally {
-                    SpektraNativeBridge.nativeCloseSession(fullHandle)
+                    SpektraNativeBridge.nativeCloseSession(exportHandle)
+                    val tag = if (state.isRawSource) "14-bit RAW 高速预览" else "JPG 线性还原"
                     _watermarkState.update {
-                        it.copy(spektraStatusText = "${it.spektraDeviceName.ifBlank { "Vulkan GPU" }} · 14-bit RAW 高速预览")
+                        it.copy(spektraStatusText = "${it.spektraDeviceName.ifBlank { "Vulkan GPU" }} · $tag")
                     }
                 }
             }
 
-            // Fast interactive preview or standard export using active session
             val handle = ensureSpektraPreviewSessionOpened(state)
             if (handle == 0L) return@withContext null
 
             val params = state.spektraParams
             val prev = lastAppliedSpektraParams
-            val tier = if (isExport && state.config.highQualityExport) "full" else if (isExport) "preview" else "live"
-            val printOnlyDelta = (prev != null && params.isPrintOnlyDeltaFrom(prev) && spektraHasRenderedLive && tier == "live")
+            val printOnlyDelta = (prev != null && params.isPrintOnlyDeltaFrom(prev) && spektraHasRenderedLive)
 
             val setReply = SpektraNativeBridge.nativeSetParams(handle, params.toEngineJson())
             if (!setReply.startsWith("OK|")) {
@@ -1770,10 +1795,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             lastAppliedSpektraParams = params
 
-            val bmp = SpektraNativeBridge.nativeRenderToBitmap(handle, tier, reprintOnly = printOnlyDelta)
+            val bmp = SpektraNativeBridge.nativeRenderToBitmap(handle, "live", reprintOnly = printOnlyDelta)
             if (bmp != null) {
-                if (tier == "live") spektraHasRenderedLive = true
-                if (!printOnlyDelta && tier == "live") {
+                spektraHasRenderedLive = true
+                if (!printOnlyDelta) {
                     val latReply = SpektraNativeBridge.nativeSceneLatitude(handle, null)
                     SpektraNativeBridge.parseLatitudeReadout(latReply)?.let { lat ->
                         _watermarkState.update { it.copy(spektraLatitude = lat) }
