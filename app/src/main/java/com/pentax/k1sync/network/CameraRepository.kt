@@ -2,7 +2,9 @@ package com.pentax.k1sync.network
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import com.pentax.k1sync.cache.AppPreferencesStore
 import com.pentax.k1sync.cache.DownloadHistoryStore
+import com.pentax.k1sync.cache.PreviewMemoryCache
 import com.pentax.k1sync.cache.ThumbnailDiskCache
 import com.pentax.k1sync.model.CameraInfo
 import com.pentax.k1sync.model.CameraPhoto
@@ -10,6 +12,7 @@ import com.pentax.k1sync.model.DownloadQuality
 import com.pentax.k1sync.model.PhotoExif
 import com.pentax.k1sync.model.ShootingParams
 import com.pentax.k1sync.model.StorageSlot
+import com.pentax.k1sync.util.BitmapOrientationUtil
 import com.pentax.k1sync.util.PentaxExifReader
 import kotlinx.coroutines.delay
 
@@ -18,24 +21,26 @@ class CameraRepository(
     val apiClient: PentaxK1ApiClient,
     val mockRepo: MockPentaxK1Repository,
     val thumbCache: ThumbnailDiskCache,
-    val historyStore: DownloadHistoryStore
+    val previewCache: PreviewMemoryCache,
+    val historyStore: DownloadHistoryStore,
+    val prefsStore: AppPreferencesStore
 ) {
     @Volatile
     var isMockMode: Boolean = false
 
-    suspend fun connectAndFetchStatus(): Result<Pair<CameraInfo, ShootingParams>> {
+    suspend fun connectAndFetchStatus(fastProbe: Boolean = false): Result<Pair<CameraInfo, ShootingParams>> {
         return if (isMockMode) {
-            delay(200)
+            delay(150)
             Result.success(mockRepo.getCameraInfo() to mockRepo.getParams())
         } else {
-            apiClient.pingAndFetchProps()
+            apiClient.pingAndFetchProps(fastProbe = fastProbe)
         }
     }
 
     suspend fun listPhotos(slot: StorageSlot): Result<List<CameraPhoto>> {
         val downloaded = historyStore.getDownloadedIds()
         val rawResult = if (isMockMode) {
-            delay(150)
+            delay(120)
             Result.success(mockRepo.listPhotos(slot))
         } else {
             apiClient.listPhotos(slot)
@@ -58,25 +63,36 @@ class CameraRepository(
         return thumbCache.put(cacheKey, bytes)
     }
 
+    fun getCachedPreview(photo: CameraPhoto): Bitmap? {
+        val key = "${if (isMockMode) "mock" else "real"}_${photo.uniqueId}_view"
+        return previewCache.get(key)
+    }
+
     suspend fun loadPreviewWithExif(photo: CameraPhoto): Result<Pair<Bitmap, PhotoExif?>> {
+        val key = "${if (isMockMode) "mock" else "real"}_${photo.uniqueId}_view"
+        previewCache.get(key)?.let { cached ->
+            return Result.success(cached to photo.exif)
+        }
+
         if (isMockMode) {
-            delay(120)
+            delay(90)
             val bytes = mockRepo.renderMockPhotoBytes(photo, 1620, 1080)
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
                 ?: return Result.failure(IllegalStateException("解码失败"))
+            previewCache.put(key, bmp)
             return Result.success(bmp to photo.exif)
         }
+
         return apiClient.downloadPhotoBytes(photo, "view").mapCatching { data ->
-            val bmp = BitmapFactory.decodeByteArray(data, 0, data.size) ?: error("无法解码图像数据")
+            val bmp = BitmapOrientationUtil.decodeOrientedBitmap(data) ?: error("无法解码图像数据")
+            previewCache.put(key, bmp)
             val parsed = PentaxExifReader.parse(data)
             bmp to parsed
         }
     }
 
     suspend fun fetchPhotoExif(photo: CameraPhoto): PhotoExif {
-        if (isMockMode) {
-            return photo.exif ?: PhotoExif(cameraModel = "PENTAX K-1")
-        }
+        if (isMockMode) return photo.exif ?: PhotoExif(cameraModel = "PENTAX K-1")
         return apiClient.fetchPhotoInfo(photo).getOrElse {
             photo.exif ?: PhotoExif(cameraModel = "PENTAX K-1")
         }
@@ -94,7 +110,7 @@ class CameraRepository(
                 DownloadQuality.RAW -> 44_000_000L
             }
             for (step in 1..6) {
-                delay(100)
+                delay(90)
                 onProgress((total * step) / 6, total)
             }
             val w = if (quality == DownloadQuality.VIEW) 1620 else 2400
@@ -107,30 +123,16 @@ class CameraRepository(
     }
 
     suspend fun updateParam(key: String, value: String): Result<ShootingParams?> {
-        return if (isMockMode) {
-            Result.success(mockRepo.setParam(key, value))
-        } else {
-            apiClient.updateCameraParam(key, value).map { null }
-        }
+        return if (isMockMode) Result.success(mockRepo.setParam(key, value))
+        else apiClient.updateCameraParam(key, value).map { null }
     }
 
-    suspend fun triggerAutoFocus(xPercent: Int?, yPercent: Int?): Result<Unit> {
-        return if (isMockMode) {
-            delay(150)
-            Result.success(Unit)
-        } else {
-            apiClient.triggerAutoFocus(xPercent, yPercent)
-        }
-    }
+    suspend fun triggerAutoFocus(xPercent: Int?, yPercent: Int?): Result<Unit> =
+        if (isMockMode) { delay(120); Result.success(Unit) } else apiClient.triggerAutoFocus(xPercent, yPercent)
 
-    suspend fun triggerShutter(afEnabled: Boolean): Result<CameraPhoto?> {
-        return if (isMockMode) {
-            delay(180)
-            Result.success(mockRepo.shootNewPhoto())
-        } else {
-            apiClient.triggerShutter(afEnabled).map { null }
-        }
-    }
+    suspend fun triggerShutter(afEnabled: Boolean): Result<CameraPhoto?> =
+        if (isMockMode) { delay(160); Result.success(mockRepo.shootNewPhoto()) }
+        else apiClient.triggerShutter(afEnabled).map { null }
 
     suspend fun startBulb(): Result<Unit> =
         if (isMockMode) Result.success(Unit) else apiClient.startBulbExposure()

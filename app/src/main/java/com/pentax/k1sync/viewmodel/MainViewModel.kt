@@ -24,6 +24,7 @@ import com.pentax.k1sync.util.BitmapOrientationUtil
 import com.pentax.k1sync.util.HistogramCalculator
 import com.pentax.k1sync.util.MediaStoreSaver
 import com.pentax.k1sync.util.PentaxExifReader
+import com.pentax.k1sync.util.PhotoShareHelper
 import com.pentax.k1sync.watermark.PentaxWatermarkRenderer
 import com.pentax.k1sync.watermark.WatermarkConfig
 import kotlinx.coroutines.Dispatchers
@@ -59,14 +60,21 @@ data class BulbState(
     val elapsedSec: Int = 0
 )
 
+data class BatchWatermarkProgress(
+    val current: Int,
+    val total: Int
+)
+
 data class WatermarkEditorState(
     val sourceBitmap: Bitmap? = null,
     val previewBitmap: Bitmap? = null,
     val sourceFileName: String = "PENTAX_K1_Sample.jpg",
-    val lensAutoDetected: Boolean = true,
     val config: WatermarkConfig = WatermarkConfig(),
     val isRendering: Boolean = false,
-    val isSaving: Boolean = false
+    val isSaving: Boolean = false,
+    val isSharing: Boolean = false,
+    val fullscreenPreview: Boolean = false,
+    val batchProgress: BatchWatermarkProgress? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -93,6 +101,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _toastMessage = MutableStateFlow<String?>(null)
     val toastMessage: StateFlow<String?> = _toastMessage.asStateFlow()
 
+    private var userManuallyDisconnected = false
+
     // --- Gallery State ---
     private val _activeSlot = MutableStateFlow(StorageSlot.SD1)
     val activeSlot: StateFlow<StorageSlot> = _activeSlot.asStateFlow()
@@ -100,8 +110,16 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _formatFilter = MutableStateFlow(PhotoFormatFilter.ALL)
     val formatFilter: StateFlow<PhotoFormatFilter> = _formatFilter.asStateFlow()
 
-    private val _photos = MutableStateFlow<List<CameraPhoto>>(emptyList())
-    val photos: StateFlow<List<CameraPhoto>> = _photos.asStateFlow()
+    private val _galleryColumns = MutableStateFlow(repo.prefsStore.loadGalleryColumns())
+    val galleryColumns: StateFlow<Int> = _galleryColumns.asStateFlow()
+
+    private val _pairRawJpg = MutableStateFlow(repo.prefsStore.loadPairRawJpg())
+    val pairRawJpg: StateFlow<Boolean> = _pairRawJpg.asStateFlow()
+
+    private val _rawPhotos = MutableStateFlow<List<CameraPhoto>>(emptyList())
+
+    private val _displayPhotos = MutableStateFlow<List<CameraPhoto>>(emptyList())
+    val displayPhotos: StateFlow<List<CameraPhoto>> = _displayPhotos.asStateFlow()
 
     private val _isLoadingPhotos = MutableStateFlow(false)
     val isLoadingPhotos: StateFlow<Boolean> = _isLoadingPhotos.asStateFlow()
@@ -112,21 +130,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _thumbnails = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
     val thumbnails: StateFlow<Map<String, Bitmap>> = _thumbnails.asStateFlow()
 
-    // --- Photo Detail State ---
-    private val _detailPhoto = MutableStateFlow<CameraPhoto?>(null)
-    val detailPhoto: StateFlow<CameraPhoto?> = _detailPhoto.asStateFlow()
+    // --- Full-Screen Photo Detail Overlay State (HorizontalPager + Preload!) ---
+    private val _detailPhotos = MutableStateFlow<List<CameraPhoto>>(emptyList())
+    val detailPhotos: StateFlow<List<CameraPhoto>> = _detailPhotos.asStateFlow()
 
-    private val _detailBitmap = MutableStateFlow<Bitmap?>(null)
-    val detailBitmap: StateFlow<Bitmap?> = _detailBitmap.asStateFlow()
+    private val _detailStartIndex = MutableStateFlow(0)
+    val detailStartIndex: StateFlow<Int> = _detailStartIndex.asStateFlow()
 
-    private val _detailExif = MutableStateFlow<PhotoExif?>(null)
-    val detailExif: StateFlow<PhotoExif?> = _detailExif.asStateFlow()
+    private val _detailOpen = MutableStateFlow(false)
+    val detailOpen: StateFlow<Boolean> = _detailOpen.asStateFlow()
 
-    private val _detailHistogram = MutableStateFlow<HistogramData?>(null)
-    val detailHistogram: StateFlow<HistogramData?> = _detailHistogram.asStateFlow()
+    private val _previewBitmaps = MutableStateFlow<Map<String, Bitmap>>(emptyMap())
+    val previewBitmaps: StateFlow<Map<String, Bitmap>> = _previewBitmaps.asStateFlow()
 
-    private val _isLoadingDetail = MutableStateFlow(false)
-    val isLoadingDetail: StateFlow<Boolean> = _isLoadingDetail.asStateFlow()
+    private val _photoExifMap = MutableStateFlow<Map<String, PhotoExif>>(emptyMap())
+    val photoExifMap: StateFlow<Map<String, PhotoExif>> = _photoExifMap.asStateFlow()
+
+    private val _photoHistogramMap = MutableStateFlow<Map<String, HistogramData>>(emptyMap())
+    val photoHistogramMap: StateFlow<Map<String, HistogramData>> = _photoHistogramMap.asStateFlow()
+
+    private val _loadingPreviewIds = MutableStateFlow<Set<String>>(emptySet())
+    val loadingPreviewIds: StateFlow<Set<String>> = _loadingPreviewIds.asStateFlow()
 
     // --- Transfer Queue State ---
     private val _defaultQuality = MutableStateFlow(DownloadQuality.VIEW)
@@ -173,22 +197,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var bulbJob: Job? = null
 
     // --- Watermark Studio State ---
-    private val _watermarkState = MutableStateFlow(WatermarkEditorState())
+    private val _watermarkState = MutableStateFlow(
+        WatermarkEditorState(config = repo.prefsStore.loadWatermarkDefaults())
+    )
     val watermarkState: StateFlow<WatermarkEditorState> = _watermarkState.asStateFlow()
+
+    private val _lensPresets = MutableStateFlow(repo.prefsStore.loadLensPresets())
+    val lensPresets: StateFlow<List<String>> = _lensPresets.asStateFlow()
+
     private var watermarkRenderJob: Job? = null
 
     init {
         viewModelScope.launch(Dispatchers.Default) {
+            val savedPrefs = repo.prefsStore.loadWatermarkDefaults()
             val samplePhoto = repo.mockRepo.listPhotos(StorageSlot.SD1).first()
             val bytes = repo.mockRepo.renderMockPhotoBytes(samplePhoto, 1440, 960)
             val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
             if (bmp != null) {
-                val cfg = WatermarkConfig.fromExif(samplePhoto.exif ?: PhotoExif())
+                val cfg = WatermarkConfig.fromExif(samplePhoto.exif ?: PhotoExif(), savedPrefs)
                 _watermarkState.update {
                     it.copy(
                         sourceBitmap = bmp,
                         sourceFileName = samplePhoto.file,
-                        lensAutoDetected = cfg.lensTitle.isNotBlank(),
                         config = cfg
                     )
                 }
@@ -210,24 +240,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun showToast(msg: String) { _toastMessage.value = msg }
 
     // ---------------------------------------------------------
-    // Connection & Wi-Fi Engine
+    // Connection, Auto-Reconnect on Foreground & Restore 5G
     // ---------------------------------------------------------
+    fun onAppForegrounded() {
+        if (_isMockMode.value || _cameraInfo.value.connected || _isConnecting.value || userManuallyDisconnected) {
+            return
+        }
+        viewModelScope.launch {
+            repo.connectAndFetchStatus(fastProbe = true).onSuccess { (info, params) ->
+                _cameraInfo.value = info
+                _shootingParams.value = params
+                showToast("已自动重新连接 ${info.model}")
+                refreshPhotos()
+            }
+        }
+    }
+
     fun toggleMockMode(enabled: Boolean) {
         stopLiveView()
         stopTether()
+        closePhotoDetail()
+        repo.previewCache.clear()
+        _previewBitmaps.value = emptyMap()
         repo.isMockMode = enabled
         _isMockMode.value = enabled
         if (enabled) {
+            userManuallyDisconnected = false
             connectCamera()
         } else {
             _cameraInfo.value = CameraInfo(connected = false)
-            _photos.value = emptyList()
+            _rawPhotos.value = emptyList()
+            _displayPhotos.value = emptyList()
             _selectedPhotoIds.value = emptySet()
             showToast("已切换为真实 PENTAX K-1 模式 (192.168.0.1)")
         }
     }
 
     fun smartConnectPentaxWifi() {
+        userManuallyDisconnected = false
         if (_isMockMode.value) {
             connectCamera()
             return
@@ -242,6 +292,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun bindCurrentWifiAndConnect() {
+        userManuallyDisconnected = false
         if (_isMockMode.value) {
             connectCamera()
             return
@@ -253,6 +304,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 connectCamera()
             }
         }
+    }
+
+    fun disconnectAndRestoreMobileNetwork() {
+        userManuallyDisconnected = true
+        stopLiveView()
+        stopTether()
+        closePhotoDetail()
+        if (_isMockMode.value) {
+            _isMockMode.value = false
+            repo.isMockMode = false
+        }
+        repo.wifiBinder.releaseBinding(silent = false)
+        _cameraInfo.value = CameraInfo(connected = false)
+        _rawPhotos.value = emptyList()
+        _displayPhotos.value = emptyList()
+        _selectedPhotoIds.value = emptySet()
+        showToast("已断开 K-1 路由锁定，手机 4G/5G 网络已恢复")
     }
 
     fun connectCamera() {
@@ -267,17 +335,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 .onFailure { err ->
                     _cameraInfo.value = CameraInfo(connected = false)
-                    showToast("未检测到 K-1 (192.168.0.1): ${err.localizedMessage ?: "请确认已连接 PENTAX_xxxx Wi-Fi"}")
+                    showToast("未检测到 K-1 (192.168.0.1): ${err.localizedMessage ?: "请先连接 PENTAX_xxxx Wi-Fi"}")
                 }
             _isConnecting.value = false
         }
     }
 
     fun syncPhoneTimeToCamera() {
-        if (!_cameraInfo.value.connected) {
-            showToast("请先连接 PENTAX K-1")
-            return
-        }
+        if (!_cameraInfo.value.connected) { showToast("请先连接 PENTAX K-1"); return }
         viewModelScope.launch {
             repo.syncPhoneTime()
                 .onSuccess { showToast("已同步时间至 K-1：$it") }
@@ -287,15 +352,35 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun clearThumbnailCache() {
         repo.thumbCache.clearAll()
+        repo.previewCache.clear()
         _thumbnails.value = emptyMap()
-        showToast("已清理缩略图缓存")
+        _previewBitmaps.value = emptyMap()
+        showToast("已清理本地缩略图与预览缓存")
     }
 
     fun cacheSizeMb(): Float = repo.thumbCache.cacheSizeMb()
 
     // ---------------------------------------------------------
-    // Gallery & Photo Detail
+    // Gallery: Pairing, Density, Filtering, Multi-Select
     // ---------------------------------------------------------
+    fun cycleGalleryColumns() {
+        val next = when (_galleryColumns.value) {
+            2 -> 3
+            3 -> 4
+            else -> 2
+        }
+        _galleryColumns.value = next
+        repo.prefsStore.saveGalleryColumns(next)
+    }
+
+    fun togglePairRawJpg() {
+        val next = !_pairRawJpg.value
+        _pairRawJpg.value = next
+        repo.prefsStore.savePairRawJpg(next)
+        recomputeDisplayPhotos()
+        showToast(if (next) "已开启 RAW+JPG 同名合并显示" else "已展开显示所有独立文件")
+    }
+
     fun switchStorageSlot(slot: StorageSlot) {
         if (_activeSlot.value == slot) return
         _activeSlot.value = slot
@@ -305,6 +390,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setFormatFilter(filter: PhotoFormatFilter) {
         _formatFilter.value = filter
+        recomputeDisplayPhotos()
     }
 
     fun refreshPhotos() {
@@ -312,9 +398,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _isLoadingPhotos.value = true
             repo.listPhotos(_activeSlot.value)
-                .onSuccess { _photos.value = it }
+                .onSuccess { list ->
+                    _rawPhotos.value = list
+                    recomputeDisplayPhotos()
+                }
                 .onFailure { showToast("读取 ${_activeSlot.value.displayName} 失败: ${it.localizedMessage}") }
             _isLoadingPhotos.value = false
+        }
+    }
+
+    private fun recomputeDisplayPhotos() {
+        val rawList = _rawPhotos.value
+        val filter = _formatFilter.value
+        val paired = _pairRawJpg.value
+
+        val mergedList = if (paired && filter == PhotoFormatFilter.ALL) {
+            val byBaseKey = LinkedHashMap<String, MutableList<CameraPhoto>>()
+            for (p in rawList) {
+                val key = "${p.dir}/${p.baseName}"
+                byBaseKey.getOrPut(key) { mutableListOf() }.add(p)
+            }
+            byBaseKey.values.map { group ->
+                val jpg = group.firstOrNull { !it.isRaw }
+                val raw = group.firstOrNull { it.isRaw }
+                when {
+                    jpg != null && raw != null -> jpg.copy(
+                        companionRaw = raw,
+                        isDownloaded = jpg.isDownloaded || raw.isDownloaded
+                    )
+                    jpg != null -> jpg
+                    else -> group.first()
+                }
+            }
+        } else {
+            when (filter) {
+                PhotoFormatFilter.ALL -> rawList
+                PhotoFormatFilter.JPG -> rawList.filter { !it.isRaw }
+                PhotoFormatFilter.RAW -> rawList.filter { it.isRaw }
+            }
+        }
+
+        _displayPhotos.value = mergedList
+        // Keep open detail list synced with download state updates
+        if (_detailOpen.value) {
+            val updatedById = mergedList.associateBy { it.uniqueId }
+            _detailPhotos.update { cur -> cur.map { updatedById[it.uniqueId] ?: it } }
         }
     }
 
@@ -332,37 +460,90 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun selectAllFiltered(filtered: List<CameraPhoto>) {
-        _selectedPhotoIds.value = filtered.map { it.uniqueId }.toSet()
+    fun selectAllVisible() {
+        _selectedPhotoIds.value = _displayPhotos.value.map { it.uniqueId }.toSet()
     }
 
     fun clearSelection() {
         _selectedPhotoIds.value = emptySet()
     }
 
+    // ---------------------------------------------------------
+    // Full-Screen Photo Detail Overlay (HorizontalPager + Adjacent Preload)
+    // ---------------------------------------------------------
     fun openPhotoDetail(photo: CameraPhoto) {
-        _detailPhoto.value = photo
-        _detailBitmap.value = _thumbnails.value[photo.uniqueId]
-        _detailExif.value = photo.exif
-        _detailHistogram.value = null
-        _isLoadingDetail.value = true
+        val list = _displayPhotos.value
+        val idx = list.indexOfFirst { it.uniqueId == photo.uniqueId }.coerceAtLeast(0)
+        _detailPhotos.value = list.ifEmpty { listOf(photo) }
+        _detailStartIndex.value = idx
+        _detailOpen.value = true
+        onDetailPageActive(idx)
+    }
+
+    fun closePhotoDetail() {
+        _detailOpen.value = false
+    }
+
+    fun onDetailPageActive(index: Int) {
+        val list = _detailPhotos.value
+        if (index !in list.indices) return
+        val current = list[index]
+        loadPreviewAndMetadata(current, computeHistogram = true)
+
+        // Silently preload previous & next neighbors for smooth horizontal swiping
+        if (index + 1 in list.indices) {
+            loadPreviewAndMetadata(list[index + 1], computeHistogram = false)
+        }
+        if (index - 1 in list.indices) {
+            loadPreviewAndMetadata(list[index - 1], computeHistogram = false)
+        }
+    }
+
+    private fun loadPreviewAndMetadata(photo: CameraPhoto, computeHistogram: Boolean) {
+        val id = photo.uniqueId
+        val cached = repo.getCachedPreview(photo)
+        if (cached != null && !_previewBitmaps.value.containsKey(id)) {
+            _previewBitmaps.update { it + (id to cached) }
+        }
+
+        if (_previewBitmaps.value.containsKey(id)) {
+            if (computeHistogram && !_photoHistogramMap.value.containsKey(id)) {
+                val bmp = _previewBitmaps.value[id] ?: return
+                viewModelScope.launch {
+                    val hist = HistogramCalculator.compute(bmp)
+                    _photoHistogramMap.update { it + (id to hist) }
+                }
+            }
+            if (!_photoExifMap.value.containsKey(id)) {
+                viewModelScope.launch {
+                    val exif = repo.fetchPhotoExif(photo)
+                    _photoExifMap.update { it + (id to exif) }
+                }
+            }
+            return
+        }
+
+        if (_loadingPreviewIds.value.contains(id)) return
+        _loadingPreviewIds.update { it + id }
 
         viewModelScope.launch {
-            val apiExifJob = launch {
+            val apiJob = launch {
                 val apiExif = repo.fetchPhotoExif(photo)
-                _detailExif.update { existing -> mergeExif(existing, apiExif) }
+                _photoExifMap.update { map -> map + (id to mergeExif(map[id], apiExif)) }
             }
             repo.loadPreviewWithExif(photo)
                 .onSuccess { (bmp, fileExif) ->
-                    _detailBitmap.value = bmp
+                    _previewBitmaps.update { it + (id to bmp) }
                     if (fileExif != null) {
-                        _detailExif.update { existing -> mergeExif(fileExif, existing) }
+                        _photoExifMap.update { map -> map + (id to mergeExif(fileExif, map[id])) }
                     }
-                    _detailHistogram.value = HistogramCalculator.compute(bmp)
+                    if (computeHistogram) {
+                        val hist = HistogramCalculator.compute(bmp)
+                        _photoHistogramMap.update { it + (id to hist) }
+                    }
                 }
-                .onFailure { showToast("加载大图失败: ${it.localizedMessage}") }
-            apiExifJob.join()
-            _isLoadingDetail.value = false
+            apiJob.join()
+            _loadingPreviewIds.update { it - id }
         }
     }
 
@@ -383,37 +564,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         )
     }
 
-    fun closePhotoDetail() {
-        _detailPhoto.value = null
-        _detailBitmap.value = null
-        _detailHistogram.value = null
+    fun downloadSingleFromDetail(photo: CameraPhoto, quality: DownloadQuality) {
+        val targetPhoto = if (quality == DownloadQuality.RAW && photo.companionRaw != null) {
+            photo.companionRaw
+        } else {
+            photo
+        }
+        val effectiveQuality = if (targetPhoto.isRaw && quality == DownloadQuality.FULL_JPG) {
+            DownloadQuality.RAW
+        } else {
+            quality
+        }
+        enqueueDownload(listOf(targetPhoto), effectiveQuality, silentToast = true)
     }
 
-    fun sendPhotoToWatermarkStudio(photo: CameraPhoto, loadedBitmap: Bitmap?, exif: PhotoExif?) {
+    fun sharePhotoFromDetail(photo: CameraPhoto) {
+        viewModelScope.launch {
+            val bmp = _previewBitmaps.value[photo.uniqueId]
+                ?: repo.loadPreviewWithExif(photo).getOrNull()?.first
+            if (bmp == null) {
+                showToast("照片尚未加载完成，请稍后重试分享")
+                return@launch
+            }
+            PhotoShareHelper.shareBitmap(getApplication(), bmp, "${photo.baseName}_K1.jpg")
+                .onFailure { showToast("调用系统分享失败: ${it.localizedMessage}") }
+        }
+    }
+
+    fun sendPhotoToWatermarkStudio(photo: CameraPhoto) {
         closePhotoDetail()
         _activeTab.value = AppTab.WATERMARK
         viewModelScope.launch {
             _watermarkState.update { it.copy(isRendering = true) }
-            val loaded = if (loadedBitmap != null) {
-                loadedBitmap to (exif ?: repo.fetchPhotoExif(photo))
+            val existingBmp = _previewBitmaps.value[photo.uniqueId]
+            val existingExif = _photoExifMap.value[photo.uniqueId]
+            val pair = if (existingBmp != null) {
+                existingBmp to (existingExif ?: repo.fetchPhotoExif(photo))
             } else {
-                val pair = repo.loadPreviewWithExif(photo).getOrNull()
-                val bmp = pair?.first
-                val merged = mergeExif(pair?.second, exif ?: repo.fetchPhotoExif(photo))
-                bmp to merged
+                val res = repo.loadPreviewWithExif(photo).getOrNull()
+                res?.first to mergeExif(res?.second, existingExif ?: repo.fetchPhotoExif(photo))
             }
-            val bmp = loaded.first
-            val resolvedExif = loaded.second
+            val bmp = pair.first
+            val exif = pair.second
             if (bmp != null) {
-                val nextCfg = WatermarkConfig.fromExif(resolvedExif, _watermarkState.value.config)
-                _watermarkState.update { state ->
-                    state.copy(
-                        sourceBitmap = bmp,
-                        sourceFileName = photo.file,
-                        lensAutoDetected = nextCfg.lensTitle.isNotBlank(),
-                        config = nextCfg
-                    )
-                }
+                val nextCfg = WatermarkConfig.fromExif(exif, _watermarkState.value.config)
+                _watermarkState.update { it.copy(sourceBitmap = bmp, sourceFileName = photo.file, config = nextCfg) }
                 triggerWatermarkPreview()
             } else {
                 _watermarkState.update { it.copy(isRendering = false) }
@@ -428,25 +623,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setDefaultQuality(quality: DownloadQuality) { _defaultQuality.value = quality }
     fun setAutoWatermarkOnTransfer(enabled: Boolean) { _autoWatermarkOnTransfer.value = enabled }
 
-    fun enqueueDownload(photosToDownload: List<CameraPhoto>, quality: DownloadQuality = _defaultQuality.value) {
+    fun enqueueDownload(
+        photosToDownload: List<CameraPhoto>,
+        quality: DownloadQuality = _defaultQuality.value,
+        silentToast: Boolean = false
+    ) {
         if (photosToDownload.isEmpty()) return
         val newTasks = photosToDownload.map { photo ->
-            val effectiveQuality = if (photo.isRaw && quality == DownloadQuality.FULL_JPG) DownloadQuality.RAW else quality
+            val target = if (quality == DownloadQuality.RAW && photo.companionRaw != null) photo.companionRaw else photo
+            val effectiveQuality = if (target.isRaw && quality == DownloadQuality.FULL_JPG) DownloadQuality.RAW else quality
             TransferTask(
                 id = UUID.randomUUID().toString(),
-                photo = photo,
+                photo = target,
                 quality = effectiveQuality,
-                autoWatermark = _autoWatermarkOnTransfer.value && !photo.isRaw
+                autoWatermark = _autoWatermarkOnTransfer.value && !target.isRaw
             )
         }
         _transferTasks.update { newTasks + it }
         _selectedPhotoIds.value = emptySet()
-        showToast("已加入 ${newTasks.size} 张至后台传输队列")
+        if (!silentToast) {
+            showToast("已添加 ${newTasks.size} 张至后台传输队列")
+        }
         ensureTransferWorkerRunning()
     }
 
     fun enqueueOnlyUndownloaded() {
-        val undownloaded = _photos.value.filter { !it.isDownloaded }
+        val undownloaded = _displayPhotos.value.filter { !it.isDownloaded }
         if (undownloaded.isEmpty()) {
             showToast("当前存储卡内照片已全部同步完毕")
             return
@@ -497,7 +699,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 res.onSuccess { bytes ->
                     val isRawFile = next.photo.isRaw && next.quality == DownloadQuality.RAW
                     val outName = if (next.quality == DownloadQuality.VIEW && next.photo.isRaw) {
-                        next.photo.file.substringBeforeLast('.') + "_preview.jpg"
+                        next.photo.baseName + "_preview.jpg"
                     } else next.photo.file
 
                     val saveResult = MediaStoreSaver.saveImageBytes(ctx, bytes, outName, isRaw = isRawFile)
@@ -509,8 +711,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                             val apiExif = repo.fetchPhotoExif(next.photo)
                             val cfg = WatermarkConfig.fromExif(mergeExif(fileExif, apiExif), _watermarkState.value.config)
                             val marked = PentaxWatermarkRenderer.render(bmp, cfg)
-                            val wmName = outName.substringBeforeLast('.') + "_pentax_wm.jpg"
-                            MediaStoreSaver.saveBitmapAsJpeg(ctx, marked, wmName)
+                            MediaStoreSaver.saveBitmapAsJpeg(ctx, marked, outName.substringBeforeLast('.') + "_pentax_wm.jpg")
                             marked.recycle()
                             bmp.recycle()
                         }
@@ -518,9 +719,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                     saveResult.onSuccess { savedPath ->
                         repo.historyStore.markDownloaded(next.photo.uniqueId)
-                        _photos.update { list ->
+                        _rawPhotos.update { list ->
                             list.map { p -> if (p.uniqueId == next.photo.uniqueId) p.copy(isDownloaded = true) else p }
                         }
+                        recomputeDisplayPhotos()
                         updateTask(next.id) { it.copy(status = TransferStatus.COMPLETED, progress = 1f, savedPath = savedPath) }
                     }.onFailure { err ->
                         updateTask(next.id) { it.copy(status = TransferStatus.FAILED, errorMessage = err.localizedMessage) }
@@ -562,17 +764,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun stopLiveView() {
-        liveViewJob?.cancel()
-        liveViewJob = null
-        _liveViewActive.value = false
-    }
-
+    fun stopLiveView() { liveViewJob?.cancel(); liveViewJob = null; _liveViewActive.value = false }
     fun setManualLensMode(enabled: Boolean) {
         _manualLensMode.value = enabled
         showToast(if (enabled) "手动头安全快门已开启（跳过 AF）" else "已恢复自动对焦快门")
     }
-
     fun setGridMode(mode: GridOverlayMode) { _gridMode.value = mode }
     fun setRemoteShotMode(mode: RemoteShotMode) { _remoteShotMode.value = mode }
 
@@ -580,18 +776,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repo.updateParam(key, value)
                 .onSuccess { updatedMock ->
-                    if (updatedMock != null) {
-                        _shootingParams.value = updatedMock
-                    } else {
-                        _shootingParams.update { cur ->
-                            when (key) {
-                                "av" -> cur.copy(av = value)
-                                "tv" -> cur.copy(tv = value)
-                                "sv" -> cur.copy(sv = value)
-                                "xv" -> cur.copy(xv = value)
-                                "wbMode" -> cur.copy(wbMode = value)
-                                else -> cur
-                            }
+                    if (updatedMock != null) _shootingParams.value = updatedMock
+                    else _shootingParams.update { cur ->
+                        when (key) {
+                            "av" -> cur.copy(av = value)
+                            "tv" -> cur.copy(tv = value)
+                            "sv" -> cur.copy(sv = value)
+                            "xv" -> cur.copy(xv = value)
+                            "wbMode" -> cur.copy(wbMode = value)
+                            else -> cur
                         }
                     }
                 }
@@ -600,21 +793,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun touchFocus(xPercent: Int, yPercent: Int) {
-        if (_manualLensMode.value) {
-            showToast("当前为手动头模式（AF 已跳过）")
-            return
-        }
+        if (_manualLensMode.value) { showToast("当前为手动头模式（AF 已跳过）"); return }
         viewModelScope.launch {
-            repo.triggerAutoFocus(xPercent, yPercent)
-                .onFailure { showToast("对焦未成功: ${it.localizedMessage}") }
+            repo.triggerAutoFocus(xPercent, yPercent).onFailure { showToast("对焦未成功: ${it.localizedMessage}") }
         }
     }
 
     fun shootSingle() {
-        if (!_cameraInfo.value.connected) {
-            showToast("请先连接 PENTAX K-1")
-            return
-        }
+        if (!_cameraInfo.value.connected) { showToast("请先连接 PENTAX K-1"); return }
         viewModelScope.launch {
             repo.triggerShutter(afEnabled = !_manualLensMode.value)
                 .onSuccess { mockPhoto ->
@@ -729,11 +915,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     // ---------------------------------------------------------
-    // Pentax Watermark Studio
+    // Pentax Watermark Studio (Persistence + Lens Presets + Batch + Share)
     // ---------------------------------------------------------
     fun updateWatermarkConfig(transform: (WatermarkConfig) -> WatermarkConfig) {
-        _watermarkState.update { it.copy(config = transform(it.config)) }
+        val next = transform(_watermarkState.value.config)
+        _watermarkState.update { it.copy(config = next) }
+        repo.prefsStore.saveWatermarkPrefs(next)
         triggerWatermarkPreview()
+    }
+
+    fun setWatermarkFullscreen(open: Boolean) {
+        _watermarkState.update { it.copy(fullscreenPreview = open) }
+    }
+
+    fun addLensPreset(name: String) {
+        val trimmed = name.trim()
+        if (trimmed.isBlank()) return
+        val updated = (listOf(trimmed) + _lensPresets.value).distinct().take(8)
+        _lensPresets.value = updated
+        repo.prefsStore.saveLensPresets(updated)
+        showToast("已保存常用镜头：$trimmed")
+    }
+
+    fun removeLensPreset(name: String) {
+        val updated = _lensPresets.value.filterNot { it == name }
+        _lensPresets.value = updated
+        repo.prefsStore.saveLensPresets(updated)
     }
 
     fun loadLocalPhotoForWatermark(uri: Uri) {
@@ -744,9 +951,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val rawBytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() }
                     ?: error("无法读取该图片")
                 val bmp = BitmapOrientationUtil.decodeOrientedBitmap(rawBytes)
-                    ?: error("无法解码图片格式（如为 PEF 请先在相机或修图软件导出 JPG/DNG）")
-
-                // Multi-layer EXIF + XMP + Pentax MakerNote parser
+                    ?: error("无法解码图片格式")
                 val parsedExif = PentaxExifReader.parse(rawBytes)
                 val nextConfig = WatermarkConfig.fromExif(parsedExif, _watermarkState.value.config)
 
@@ -754,20 +959,52 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     state.copy(
                         sourceBitmap = bmp,
                         sourceFileName = "PENTAX_${System.currentTimeMillis() % 100000}.jpg",
-                        lensAutoDetected = nextConfig.lensTitle.isNotBlank(),
                         config = nextConfig
                     )
                 }
                 triggerWatermarkPreview()
                 if (nextConfig.lensTitle.isBlank()) {
-                    showToast("已读取光圈快门等参数；该图未含镜头信息，水印将自动隐藏镜头栏")
+                    showToast("已读取拍摄参数；无镜头元数据，水印已自动隐藏镜头栏")
                 } else {
-                    showToast("已自动识别镜头：${nextConfig.lensTitle}")
+                    showToast("已识别镜头：${nextConfig.lensTitle}")
                 }
             } catch (e: Exception) {
                 _watermarkState.update { it.copy(isRendering = false) }
                 showToast("读取相册照片失败: ${e.localizedMessage}")
             }
+        }
+    }
+
+    fun batchApplyWatermark(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val ctx = getApplication<Application>()
+            val baseConfig = _watermarkState.value.config
+            val maxEdge = if (baseConfig.highQualityExport) null else 2560
+            var successCount = 0
+
+            uris.forEachIndexed { idx, uri ->
+                _watermarkState.update { it.copy(batchProgress = BatchWatermarkProgress(idx + 1, uris.size)) }
+                try {
+                    val bytes = ctx.contentResolver.openInputStream(uri)?.use { it.readBytes() } ?: return@forEachIndexed
+                    val bmp = BitmapOrientationUtil.decodeOrientedBitmap(bytes) ?: return@forEachIndexed
+                    val exif = PentaxExifReader.parse(bytes)
+                    val photoCfg = WatermarkConfig.fromExif(exif, baseConfig)
+                    val rendered = PentaxWatermarkRenderer.render(bmp, photoCfg, maxLongEdge = maxEdge)
+                    val outName = "PENTAX_BATCH_${System.currentTimeMillis() % 100000}_${idx + 1}.jpg"
+                    val res = MediaStoreSaver.saveBitmapAsJpeg(
+                        ctx, rendered, outName,
+                        quality = if (baseConfig.highQualityExport) 97 else 90
+                    )
+                    rendered.recycle()
+                    bmp.recycle()
+                    if (res.isSuccess) successCount++
+                } catch (_: Exception) {
+                }
+            }
+
+            _watermarkState.update { it.copy(batchProgress = null) }
+            showToast("批量水印完成：已保存 $successCount/${uris.size} 张至 PentaxK1_Watermark")
         }
     }
 
@@ -784,10 +1021,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun exportWatermarkedPhoto() {
         val state = _watermarkState.value
-        val src = state.sourceBitmap ?: run {
-            showToast("请先选择一张照片")
-            return
-        }
+        val src = state.sourceBitmap ?: run { showToast("请先选择一张照片"); return }
         viewModelScope.launch {
             _watermarkState.update { it.copy(isSaving = true) }
             val maxEdge = if (state.config.highQualityExport) null else 2560
@@ -796,17 +1030,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val outName = "${baseName}_PENTAX_${state.config.style.name.lowercase()}.jpg"
             val result = withContext(Dispatchers.IO) {
                 MediaStoreSaver.saveBitmapAsJpeg(
-                    context = getApplication(),
-                    bitmap = finalBitmap,
-                    fileName = outName,
-                    quality = if (state.config.highQualityExport) 97 else 90,
-                    subFolder = "PentaxK1_Watermark"
+                    getApplication(), finalBitmap, outName,
+                    quality = if (state.config.highQualityExport) 97 else 90
                 )
             }
             finalBitmap.recycle()
             _watermarkState.update { it.copy(isSaving = false) }
-            result.onSuccess { path -> showToast("已导出宾得水印照：$path") }
+            result.onSuccess { path -> showToast("已保存至相册：$path") }
                 .onFailure { err -> showToast("导出失败: ${err.localizedMessage}") }
+        }
+    }
+
+    fun shareWatermarkedPhoto() {
+        val state = _watermarkState.value
+        val src = state.sourceBitmap ?: run { showToast("请先选择一张照片"); return }
+        viewModelScope.launch {
+            _watermarkState.update { it.copy(isSharing = true) }
+            val maxEdge = if (state.config.highQualityExport) 3000 else 2048
+            val finalBitmap = PentaxWatermarkRenderer.render(src, state.config, maxLongEdge = maxEdge)
+            val baseName = state.sourceFileName.substringBeforeLast('.')
+            val result = PhotoShareHelper.shareBitmap(getApplication(), finalBitmap, "${baseName}_PENTAX_WM.jpg")
+            finalBitmap.recycle()
+            _watermarkState.update { it.copy(isSharing = false) }
+            result.onFailure { showToast("调起分享失败: ${it.localizedMessage}") }
         }
     }
 
@@ -814,6 +1060,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         super.onCleared()
         stopLiveView()
         stopTether()
-        repo.wifiBinder.releaseBinding()
+        repo.wifiBinder.releaseBinding(silent = true)
     }
 }

@@ -30,8 +30,10 @@ class WifiNetworkBinder(context: Context) {
         return _boundNetwork.value?.socketFactory ?: SocketFactory.getDefault()
     }
 
+    fun isRouteBound(): Boolean = _boundNetwork.value != null
+
     fun bindToCurrentWifi(onBound: (Boolean) -> Unit = {}) {
-        releaseBinding()
+        releaseBinding(silent = true)
 
         val request = NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -78,7 +80,7 @@ class WifiNetworkBinder(context: Context) {
             return
         }
 
-        releaseBinding()
+        releaseBinding(silent = true)
         _statusMessage.value = "正在搜索 PENTAX_xxxx 热点..."
 
         val specifier = WifiNetworkSpecifier.Builder()
@@ -124,7 +126,7 @@ class WifiNetworkBinder(context: Context) {
         }
     }
 
-    fun releaseBinding() {
+    fun releaseBinding(silent: Boolean = false) {
         activeCallback?.let { cb ->
             try {
                 connectivityManager.unregisterNetworkCallback(cb)
@@ -137,5 +139,8 @@ class WifiNetworkBinder(context: Context) {
         } catch (_: Exception) {
         }
         _boundNetwork.value = null
+        if (!silent) {
+            _statusMessage.value = "已释放相机热点路由 · 移动网络已恢复"
+        }
     }
 }

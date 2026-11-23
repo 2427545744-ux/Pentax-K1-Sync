@@ -8,13 +8,13 @@ import androidx.compose.ui.graphics.Color
 val ObsidianBg = Color(0xFF0B0B0D)
 val ElevatedSurface = Color(0xFF131316)
 val MatteCard = Color(0xFF1A1A1F)
-val MatteCardHover = Color(0xFF222228)
 val HairlineBorder = Color(0xFF28282F)
 val SubtleDivider = Color(0xFF202026)
 
 val PentaxGreen = Color(0xFF22C55E)
 val PentaxGreenSoft = Color(0xFF163322)
 val PentaxRed = Color(0xFFD0122A)
+val ChampagneGold = Color(0xFFD4A84C)
 val WarmAmber = Color(0xFFF59E0B)
 
 val InkPrimary = Color(0xFFF5F5F7)

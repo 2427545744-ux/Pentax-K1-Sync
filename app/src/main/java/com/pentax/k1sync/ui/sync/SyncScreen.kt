@@ -25,6 +25,7 @@ import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SdCard
+import androidx.compose.material.icons.rounded.SignalCellularAlt
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -79,7 +80,6 @@ fun SyncScreen(viewModel: MainViewModel) {
             .background(ObsidianBg)
             .verticalScroll(rememberScrollState())
     ) {
-        // Minimal Header
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -103,20 +103,13 @@ fun SyncScreen(viewModel: MainViewModel) {
                     .border(0.5.dp, HairlineBorder, RoundedCornerShape(18.dp))
                     .padding(16.dp)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     Box(
                         modifier = Modifier
                             .size(56.dp)
                             .clip(RoundedCornerShape(14.dp))
                             .background(ObsidianBg)
-                            .border(
-                                1.dp,
-                                if (cameraInfo.connected) PentaxGreen.copy(alpha = 0.6f) else HairlineBorder,
-                                RoundedCornerShape(14.dp)
-                            ),
+                            .border(1.dp, if (cameraInfo.connected) PentaxGreen.copy(alpha = 0.6f) else HairlineBorder, RoundedCornerShape(14.dp)),
                         contentAlignment = Alignment.Center
                     ) {
                         PentaxK1SilhouetteIcon(
@@ -127,20 +120,9 @@ fun SyncScreen(viewModel: MainViewModel) {
                     }
                     Spacer(Modifier.width(14.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = if (cameraInfo.connected) cameraInfo.model else "PENTAX K-1 (一代)",
-                            color = InkPrimary,
-                            fontSize = 16.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text(if (cameraInfo.connected) cameraInfo.model else "PENTAX K-1 (一代)", color = InkPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = wifiStatus,
-                            color = if (cameraInfo.connected) PentaxGreen else InkSecondary,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
+                        Text(wifiStatus, color = if (cameraInfo.connected) PentaxGreen else InkSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     if (isConnecting) {
                         CircularProgressIndicator(color = PentaxGreen, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))
@@ -149,30 +131,17 @@ fun SyncScreen(viewModel: MainViewModel) {
 
                 if (cameraInfo.connected) {
                     Spacer(Modifier.height(14.dp))
-                    // Battery bar
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                         Text("机身电量", color = InkSecondary, fontSize = 11.sp)
-                        Text(
-                            "${cameraInfo.batteryPercent}%",
-                            color = PentaxGreen,
-                            fontSize = 11.sp,
-                            fontFamily = FontFamily.Monospace,
-                            fontWeight = FontWeight.Bold
-                        )
+                        Text("${cameraInfo.batteryPercent}%", color = PentaxGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
                     }
                     Spacer(Modifier.height(5.dp))
                     LinearProgressIndicator(
                         progress = { (cameraInfo.batteryPercent / 100f).coerceIn(0f, 1f) },
-                        color = PentaxGreen,
-                        trackColor = ObsidianBg,
+                        color = PentaxGreen, trackColor = ObsidianBg,
                         modifier = Modifier.fillMaxWidth().height(4.dp).clip(CircleShape)
                     )
                     Spacer(Modifier.height(12.dp))
-                    // SD1 & SD2 Cards
                     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         cameraInfo.storages.forEach { st ->
                             Row(
@@ -188,12 +157,7 @@ fun SyncScreen(viewModel: MainViewModel) {
                                 Spacer(Modifier.width(6.dp))
                                 Column {
                                     Text(st.slot.displayName, color = InkPrimary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                                    Text(
-                                        if (st.available) "余 ${st.remainShots} 张" else "未插卡",
-                                        color = InkSecondary,
-                                        fontSize = 10.sp,
-                                        fontFamily = FontFamily.Monospace
-                                    )
+                                    Text(if (st.available) "余 ${st.remainShots} 张" else "未插卡", color = InkSecondary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                                 }
                             }
                         }
@@ -204,13 +168,11 @@ fun SyncScreen(viewModel: MainViewModel) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(42.dp)
+                            .weight(1f).height(42.dp)
                             .clip(RoundedCornerShape(11.dp))
                             .background(PentaxGreen)
                             .clickable { viewModel.smartConnectPentaxWifi() },
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically
+                        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
                     ) {
                         Icon(Icons.Rounded.Wifi, null, tint = Color(0xFF04170B), modifier = Modifier.size(16.dp))
                         Spacer(Modifier.width(6.dp))
@@ -218,8 +180,7 @@ fun SyncScreen(viewModel: MainViewModel) {
                     }
                     Box(
                         modifier = Modifier
-                            .weight(1f)
-                            .height(42.dp)
+                            .weight(1f).height(42.dp)
                             .clip(RoundedCornerShape(11.dp))
                             .background(ObsidianBg)
                             .border(0.5.dp, HairlineBorder, RoundedCornerShape(11.dp))
@@ -229,9 +190,27 @@ fun SyncScreen(viewModel: MainViewModel) {
                         Text("绑定当前 Wi-Fi", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     }
                 }
+
+                // 1-Tap Disconnect & Restore 5G Mobile Network Button
+                if (cameraInfo.connected) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth().height(40.dp)
+                            .clip(RoundedCornerShape(11.dp))
+                            .background(PentaxRed.copy(alpha = 0.14f))
+                            .border(0.5.dp, PentaxRed.copy(alpha = 0.5f), RoundedCornerShape(11.dp))
+                            .clickable { viewModel.disconnectAndRestoreMobileNetwork() },
+                        horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(Icons.Rounded.SignalCellularAlt, null, tint = PentaxRed, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text("断开相机热点并恢复手机 4G/5G 上网", color = InkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                    }
+                }
             }
 
-            // 2. Grouped Camera Utilities & Demo Switch
+            // 2. Utilities & Mock Mode
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -242,32 +221,21 @@ fun SyncScreen(viewModel: MainViewModel) {
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
                         Text("虚拟 K-1 演示模式 (Mock)", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         Text("无真机时体验全部界面，连实机请关闭", color = InkSecondary, fontSize = 11.sp)
                     }
                     Switch(
-                        checked = isMock,
-                        onCheckedChange = { viewModel.toggleMockMode(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = WarmAmber,
-                            uncheckedTrackColor = ObsidianBg,
-                            uncheckedBorderColor = HairlineBorder
-                        )
+                        checked = isMock, onCheckedChange = { viewModel.toggleMockMode(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = WarmAmber, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
                     )
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { viewModel.syncPhoneTimeToCamera() }
-                        .padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth().clickable { viewModel.syncPhoneTimeToCamera() }.padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.Schedule, null, tint = PentaxGreen, modifier = Modifier.size(18.dp))
@@ -278,17 +246,13 @@ fun SyncScreen(viewModel: MainViewModel) {
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
                 Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { viewModel.clearThumbnailCache() }
-                        .padding(vertical = 12.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    modifier = Modifier.fillMaxWidth().clickable { viewModel.clearThumbnailCache() }.padding(vertical = 12.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.DeleteOutline, null, tint = InkSecondary, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
-                        Text("清理本地缩略图缓存", color = InkPrimary, fontSize = 13.sp)
+                        Text("清理本地缩略图与预览缓存", color = InkPrimary, fontSize = 13.sp)
                     }
                     Text("${"%.1f".format(viewModel.cacheSizeMb())} MB", color = InkSecondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
@@ -316,56 +280,33 @@ fun SyncScreen(viewModel: MainViewModel) {
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
                         Text("传图自动附带宾得水印副本", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                         Text("保留干净原图的同时额外存入 PentaxK1_Watermark", color = InkSecondary, fontSize = 11.sp)
                     }
                     Switch(
-                        checked = autoWatermark,
-                        onCheckedChange = { viewModel.setAutoWatermarkOnTransfer(it) },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = Color.White,
-                            checkedTrackColor = PentaxGreen,
-                            uncheckedTrackColor = ObsidianBg,
-                            uncheckedBorderColor = HairlineBorder
-                        )
+                        checked = autoWatermark, onCheckedChange = { viewModel.setAutoWatermarkOnTransfer(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = PentaxGreen, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
                     )
                 }
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(42.dp)
+                        .fillMaxWidth().height(42.dp)
                         .clip(RoundedCornerShape(11.dp))
                         .background(if (cameraInfo.connected) PentaxGreen else ObsidianBg)
                         .clickable(enabled = cameraInfo.connected) { viewModel.enqueueOnlyUndownloaded() },
-                    horizontalArrangement = Arrangement.Center,
-                    verticalAlignment = Alignment.CenterVertically
+                    horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Icon(
-                        Icons.Rounded.Download,
-                        null,
-                        tint = if (cameraInfo.connected) Color(0xFF04170B) else InkSecondary,
-                        modifier = Modifier.size(16.dp)
-                    )
+                    Icon(Icons.Rounded.Download, null, tint = if (cameraInfo.connected) Color(0xFF04170B) else InkSecondary, modifier = Modifier.size(16.dp))
                     Spacer(Modifier.width(6.dp))
-                    Text(
-                        "一键同步当前卡内所有未下载新照片",
-                        color = if (cameraInfo.connected) Color(0xFF04170B) else InkSecondary,
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.Bold
-                    )
+                    Text("一键同步当前卡内所有未下载新照片", color = if (cameraInfo.connected) Color(0xFF04170B) else InkSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
 
-            // 4. Transfer Queue List
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
+            // 4. Transfer Queue
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Text("后台传输队列 (${tasks.size})", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
                 if (tasks.isNotEmpty()) {
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -384,7 +325,7 @@ fun SyncScreen(viewModel: MainViewModel) {
                         .border(0.5.dp, HairlineBorder, RoundedCornerShape(14.dp))
                         .padding(16.dp)
                 ) {
-                    Text("队列空闲。在「图库」长按多选或点上方一键同步即可开启后台传输。", color = InkSecondary, fontSize = 12.sp)
+                    Text("队列空闲。在大图页单张下载、图库长按多选，或点击上方一键同步即可开始。", color = InkSecondary, fontSize = 12.sp)
                 }
             } else {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -406,20 +347,10 @@ private fun TransferTaskItem(task: TransferTask) {
             .border(0.5.dp, HairlineBorder, RoundedCornerShape(12.dp))
             .padding(12.dp)
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f).padding(end = 8.dp)) {
                 Text(task.photo.file, color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "${task.quality.label} · ${task.savedPath ?: task.errorMessage ?: task.status.name}",
-                    color = InkSecondary,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Text("${task.quality.label} · ${task.savedPath ?: task.errorMessage ?: task.status.name}", color = InkSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             when (task.status) {
                 TransferStatus.COMPLETED -> Icon(Icons.Rounded.CheckCircle, null, tint = PentaxGreen, modifier = Modifier.size(18.dp))
@@ -432,9 +363,7 @@ private fun TransferTaskItem(task: TransferTask) {
         if (task.status == TransferStatus.DOWNLOADING) {
             Spacer(Modifier.height(8.dp))
             LinearProgressIndicator(
-                progress = { task.progress },
-                color = PentaxGreen,
-                trackColor = ObsidianBg,
+                progress = { task.progress }, color = PentaxGreen, trackColor = ObsidianBg,
                 modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape)
             )
         }

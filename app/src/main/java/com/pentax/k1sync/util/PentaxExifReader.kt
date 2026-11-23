@@ -5,15 +5,6 @@ import com.pentax.k1sync.model.PhotoExif
 import java.io.ByteArrayInputStream
 import java.nio.charset.StandardCharsets
 
-/**
- * Multi-layer metadata extractor tailored for Pentax K-1 JPG & DNG/PEF files:
- * 1. Standard EXIF (ExifInterface)
- * 2. Embedded XMP (aux:Lens / exifEX:LensModel)
- * 3. Pentax MakerNote binary parser (AOC\0 -> Tag 0x003F LensType lookup table)
- *
- * Returns empty string for lensModel if unavailable (e.g., vintage manual lens without contacts),
- * so watermark templates cleanly hide the lens row without displaying stale/fake defaults.
- */
 object PentaxExifReader {
 
     fun parse(rawBytes: ByteArray): PhotoExif {
@@ -47,13 +38,8 @@ object PentaxExifReader {
         } catch (_: Exception) {
         }
 
-        if (lens.isBlank()) {
-            lens = extractLensFromXmp(rawBytes).orEmpty()
-        }
-
-        if (lens.isBlank()) {
-            lens = extractLensFromPentaxMakerNote(rawBytes).orEmpty()
-        }
+        if (lens.isBlank()) lens = extractLensFromXmp(rawBytes).orEmpty()
+        if (lens.isBlank()) lens = extractLensFromPentaxMakerNote(rawBytes).orEmpty()
 
         return PhotoExif(
             cameraModel = model.ifBlank { "PENTAX K-1" },
@@ -94,7 +80,6 @@ object PentaxExifReader {
         return try {
             val scanLimit = minOf(bytes.size - 24, 131_072)
             if (scanLimit <= 0) return null
-
             var aocPos = -1
             for (i in 0 until scanLimit) {
                 if (bytes[i] == 'A'.code.toByte() &&
@@ -146,8 +131,7 @@ object PentaxExifReader {
                     if (count in 2..4) {
                         val b0 = bytes[pos + 8].toInt() and 0xFF
                         val b1 = bytes[pos + 9].toInt() and 0xFF
-                        val lensId = (b0 shl 8) or b1
-                        return PENTAX_LENS_TABLE[lensId]
+                        return PENTAX_LENS_TABLE[(b0 shl 8) or b1]
                     }
                 }
                 pos += 12
@@ -166,13 +150,9 @@ object PentaxExifReader {
                 val num = p[0].toDouble()
                 val den = p[1].toDouble()
                 if (den != 0.0) num / den else num
-            } else {
-                raw.toDouble()
-            }
+            } else raw.toDouble()
             if (mm <= 0.0) "" else if (mm % 1.0 == 0.0) "${mm.toInt()}mm" else "${"%.1f".format(mm)}mm"
-        } catch (_: Exception) {
-            raw
-        }
+        } catch (_: Exception) { raw }
     }
 
     private fun parseAperture(raw: String?): String {
@@ -180,9 +160,7 @@ object PentaxExifReader {
         return try {
             val v = raw.toDouble()
             if (v <= 0.0) "" else if (v % 1.0 == 0.0) "${v.toInt()}" else "%.1f".format(v)
-        } catch (_: Exception) {
-            raw.trim()
-        }
+        } catch (_: Exception) { raw.trim() }
     }
 
     private fun parseShutter(raw: String?): String {
@@ -194,9 +172,7 @@ object PentaxExifReader {
                 sec >= 1.0 -> if (sec % 1.0 == 0.0) "${sec.toInt()}s" else "${"%.1f".format(sec)}s"
                 else -> "1/${kotlin.math.round(1.0 / sec).toInt()}s"
             }
-        } catch (_: Exception) {
-            raw.trim()
-        }
+        } catch (_: Exception) { raw.trim() }
     }
 
     private val PENTAX_LENS_TABLE: Map<Int, String> = mapOf(

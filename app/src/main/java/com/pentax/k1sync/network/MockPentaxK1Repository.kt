@@ -20,179 +20,59 @@ import kotlin.math.sin
 class MockPentaxK1Repository {
 
     private var currentParams = ShootingParams(
-        av = "1.8",
-        tv = "1.500",
-        sv = "100",
-        xv = "0.0",
-        wbMode = "daylight",
-        exposureMode = "AV"
+        av = "1.8", tv = "1.500", sv = "100", xv = "0.0", wbMode = "daylight", exposureMode = "AV"
     )
 
     private val sd1Photos = mutableListOf(
         CameraPhoto(
-            dir = "105_1122",
-            file = "IMGP4821.JPG",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月22日 · 105_1122",
-            isRaw = false,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-FA 77mmF1.8 Limited",
-                focalLength = "77mm",
-                aperture = "1.8",
-                shutterSpeed = "1/500s",
-                iso = "100",
-                exposureComp = "0.0 EV",
-                dateTime = "2026.11.22 17:42:18",
-                width = 7360,
-                height = 4912
-            )
+            dir = "105_1122", file = "IMGP4821.JPG", slot = StorageSlot.SD1,
+            dateGroup = "11月22日 · 105_1122", isRaw = false,
+            exif = PhotoExif("PENTAX K-1", "HD PENTAX-FA 77mmF1.8 Limited", "77mm", "1.8", "1/500s", "100", "0.0 EV", "2026.11.22 17:42:18", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "105_1122",
-            file = "IMGP4821.PEF",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月22日 · 105_1122",
-            isRaw = true,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-FA 77mmF1.8 Limited",
-                focalLength = "77mm",
-                aperture = "1.8",
-                shutterSpeed = "1/500s",
-                iso = "100",
-                exposureComp = "0.0 EV",
-                dateTime = "2026.11.22 17:42:18",
-                width = 7360,
-                height = 4912
-            )
+            dir = "105_1122", file = "IMGP4821.PEF", slot = StorageSlot.SD1,
+            dateGroup = "11月22日 · 105_1122", isRaw = true,
+            exif = PhotoExif("PENTAX K-1", "HD PENTAX-FA 77mmF1.8 Limited", "77mm", "1.8", "1/500s", "100", "0.0 EV", "2026.11.22 17:42:18", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "105_1122",
-            file = "IMGP4822.JPG",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月22日 · 105_1122",
-            isRaw = false,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "smc PENTAX-FA 31mmF1.8AL Limited",
-                focalLength = "31mm",
-                aperture = "4.0",
-                shutterSpeed = "1/1250s",
-                iso = "100",
-                exposureComp = "-0.3 EV",
-                dateTime = "2026.11.22 16:15:04",
-                width = 7360,
-                height = 4912
-            )
+            dir = "105_1122", file = "IMGP4822.JPG", slot = StorageSlot.SD1,
+            dateGroup = "11月22日 · 105_1122", isRaw = false,
+            exif = PhotoExif("PENTAX K-1", "smc PENTAX-FA 31mmF1.8AL Limited", "31mm", "4.0", "1/1250s", "100", "-0.3 EV", "2026.11.22 16:15:04", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "105_1122",
-            file = "IMGP4823.JPG",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月22日 · 105_1122",
-            isRaw = false,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-D FA* 50mmF1.4 SDM AW",
-                focalLength = "50mm",
-                aperture = "1.4",
-                shutterSpeed = "1/800s",
-                iso = "200",
-                exposureComp = "+0.3 EV",
-                dateTime = "2026.11.22 15:08:39",
-                width = 7360,
-                height = 4912
-            )
+            dir = "105_1122", file = "IMGP4823.JPG", slot = StorageSlot.SD1,
+            dateGroup = "11月22日 · 105_1122", isRaw = false,
+            exif = PhotoExif("PENTAX K-1", "HD PENTAX-D FA* 50mmF1.4 SDM AW", "50mm", "1.4", "1/800s", "200", "+0.3 EV", "2026.11.22 15:08:39", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "104_1119",
-            file = "IMGP4790.JPG",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月19日 · 104_1119",
-            isRaw = false,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-D FA 15-30mmF2.8ED SDM WR",
-                focalLength = "15mm",
-                aperture = "2.8",
-                shutterSpeed = "25s",
-                iso = "3200",
-                exposureComp = "0.0 EV",
-                dateTime = "2026.11.19 22:36:11",
-                width = 7360,
-                height = 4912
-            )
+            dir = "104_1119", file = "IMGP4790.JPG", slot = StorageSlot.SD1,
+            dateGroup = "11月19日 · 104_1119", isRaw = false,
+            exif = PhotoExif("PENTAX K-1", "HD PENTAX-D FA 15-30mmF2.8ED SDM WR", "15mm", "2.8", "25s", "3200", "0.0 EV", "2026.11.19 22:36:11", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "104_1119",
-            file = "IMGP4790.DNG",
-            slot = StorageSlot.SD1,
-            dateGroup = "11月19日 · 104_1119",
-            isRaw = true,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-D FA 15-30mmF2.8ED SDM WR",
-                focalLength = "15mm",
-                aperture = "2.8",
-                shutterSpeed = "25s",
-                iso = "3200",
-                exposureComp = "0.0 EV",
-                dateTime = "2026.11.19 22:36:11",
-                width = 7360,
-                height = 4912
-            )
+            dir = "104_1119", file = "IMGP4790.DNG", slot = StorageSlot.SD1,
+            dateGroup = "11月19日 · 104_1119", isRaw = true,
+            exif = PhotoExif("PENTAX K-1", "HD PENTAX-D FA 15-30mmF2.8ED SDM WR", "15mm", "2.8", "25s", "3200", "0.0 EV", "2026.11.19 22:36:11", 7360, 4912)
         )
     )
 
     private val sd2Photos = mutableListOf(
         CameraPhoto(
-            dir = "201_1115",
-            file = "IMGP4610.PEF",
-            slot = StorageSlot.SD2,
-            dateGroup = "11月15日 · 201_1115",
-            isRaw = true,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "smc PENTAX-FA 43mmF1.9 Limited",
-                focalLength = "43mm",
-                aperture = "2.8",
-                shutterSpeed = "1/320s",
-                iso = "400",
-                exposureComp = "0.0 EV",
-                dateTime = "2026.11.15 09:20:45",
-                width = 7360,
-                height = 4912
-            )
+            dir = "201_1115", file = "IMGP4610.PEF", slot = StorageSlot.SD2,
+            dateGroup = "11月15日 · 201_1115", isRaw = true,
+            exif = PhotoExif("PENTAX K-1", "smc PENTAX-FA 43mmF1.9 Limited", "43mm", "2.8", "1/320s", "400", "0.0 EV", "2026.11.15 09:20:45", 7360, 4912)
         ),
         CameraPhoto(
-            dir = "201_1115",
-            file = "IMGP4611.JPG",
-            slot = StorageSlot.SD2,
-            dateGroup = "11月15日 · 201_1115",
-            isRaw = false,
-            exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "smc PENTAX-FA 43mmF1.9 Limited",
-                focalLength = "43mm",
-                aperture = "5.6",
-                shutterSpeed = "1/640s",
-                iso = "100",
-                exposureComp = "-0.7 EV",
-                dateTime = "2026.11.15 10:12:03",
-                width = 7360,
-                height = 4912
-            )
+            dir = "201_1115", file = "IMGP4611.JPG", slot = StorageSlot.SD2,
+            dateGroup = "11月15日 · 201_1115", isRaw = false,
+            exif = PhotoExif("PENTAX K-1", "smc PENTAX-FA 43mmF1.9 Limited", "43mm", "5.6", "1/640s", "100", "-0.7 EV", "2026.11.15 10:12:03", 7360, 4912)
         )
     )
 
     private var shotCounter = 4824
 
     fun getCameraInfo(): CameraInfo = CameraInfo(
-        connected = true,
-        isMock = true,
-        model = "PENTAX K-1",
-        firmwareVersion = "2.40 (Mock)",
+        connected = true, isMock = true, model = "PENTAX K-1", firmwareVersion = "2.40 (Mock)",
         batteryPercent = 86,
         storages = listOf(
             StorageStatus(StorageSlot.SD1, available = true, remainShots = 642, format = "RAW+"),
@@ -215,29 +95,18 @@ class MockPentaxK1Repository {
         return currentParams
     }
 
-    fun listPhotos(slot: StorageSlot): List<CameraPhoto> {
-        return if (slot == StorageSlot.SD1) sd1Photos.toList() else sd2Photos.toList()
-    }
+    fun listPhotos(slot: StorageSlot): List<CameraPhoto> =
+        if (slot == StorageSlot.SD1) sd1Photos.toList() else sd2Photos.toList()
 
     fun shootNewPhoto(): CameraPhoto {
         val fileName = "IMGP${shotCounter++}.JPG"
         val newPhoto = CameraPhoto(
-            dir = "105_1122",
-            file = fileName,
-            slot = StorageSlot.SD1,
-            dateGroup = "11月22日 · 105_1122",
-            isRaw = false,
+            dir = "105_1122", file = fileName, slot = StorageSlot.SD1,
+            dateGroup = "11月22日 · 105_1122", isRaw = false,
             exif = PhotoExif(
-                cameraModel = "PENTAX K-1",
-                lensModel = "HD PENTAX-FA 77mmF1.8 Limited",
-                focalLength = "77mm",
-                aperture = currentParams.av,
-                shutterSpeed = ShootingParams.formatTvDisplay(currentParams.tv),
-                iso = currentParams.sv,
-                exposureComp = "${currentParams.xv} EV",
-                dateTime = "2026.11.22 19:25:00",
-                width = 7360,
-                height = 4912
+                "PENTAX K-1", "HD PENTAX-FA 77mmF1.8 Limited", "77mm",
+                currentParams.av, ShootingParams.formatTvDisplay(currentParams.tv),
+                currentParams.sv, "${currentParams.xv} EV", "2026.11.22 19:25:00", 7360, 4912
             )
         )
         sd1Photos.add(0, newPhoto)
@@ -245,16 +114,14 @@ class MockPentaxK1Repository {
     }
 
     fun renderMockPhotoBytes(photo: CameraPhoto, width: Int, height: Int): ByteArray {
-        val bmp = renderMockBitmap(photo.file.hashCode(), width, height, 0f)
+        val bmp = renderMockBitmap(photo.baseName.hashCode(), width, height, 0f)
         val out = ByteArrayOutputStream()
         bmp.compress(Bitmap.CompressFormat.JPEG, 92, out)
         bmp.recycle()
         return out.toByteArray()
     }
 
-    fun renderLiveViewFrame(tick: Int): Bitmap {
-        return renderMockBitmap(seed = 2026, width = 960, height = 640, phase = tick * 0.08f)
-    }
+    fun renderLiveViewFrame(tick: Int): Bitmap = renderMockBitmap(2026, 960, 640, tick * 0.08f)
 
     private fun renderMockBitmap(seed: Int, width: Int, height: Int, phase: Float): Bitmap {
         val bmp = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)

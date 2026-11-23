@@ -29,6 +29,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
@@ -82,19 +84,14 @@ fun GalleryScreen(viewModel: MainViewModel) {
     val cameraInfo by viewModel.cameraInfo.collectAsState()
     val activeSlot by viewModel.activeSlot.collectAsState()
     val formatFilter by viewModel.formatFilter.collectAsState()
-    val photos by viewModel.photos.collectAsState()
+    val columns by viewModel.galleryColumns.collectAsState()
+    val pairRawJpg by viewModel.pairRawJpg.collectAsState()
+    val photos by viewModel.displayPhotos.collectAsState()
     val isLoading by viewModel.isLoadingPhotos.collectAsState()
     val selectedIds by viewModel.selectedPhotoIds.collectAsState()
     val thumbnails by viewModel.thumbnails.collectAsState()
 
-    val filteredPhotos = remember(photos, formatFilter) {
-        when (formatFilter) {
-            PhotoFormatFilter.ALL -> photos
-            PhotoFormatFilter.JPG -> photos.filter { !it.isRaw }
-            PhotoFormatFilter.RAW -> photos.filter { it.isRaw }
-        }
-    }
-    val groupedPhotos = remember(filteredPhotos) { filteredPhotos.groupBy { it.dateGroup } }
+    val groupedPhotos = remember(photos) { photos.groupBy { it.dateGroup } }
 
     Box(
         modifier = Modifier
@@ -107,7 +104,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(ElevatedSurface)
-                    .padding(horizontal = 16.dp, vertical = 10.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp)
             ) {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -117,11 +114,27 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     PentaxBrandHeader()
                     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                         ConnectionPillBadge(cameraInfo) { viewModel.selectTab(AppTab.SYNC) }
-                        IconButton(
-                            onClick = { viewModel.refreshPhotos() },
-                            modifier = Modifier.size(34.dp)
-                        ) {
-                            Icon(Icons.Rounded.Refresh, contentDescription = "刷新", tint = InkSecondary, modifier = Modifier.size(19.dp))
+                        if (cameraInfo.connected) {
+                            // Grid density toggle (2 / 3 / 4 columns)
+                            Row(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MatteCard)
+                                    .border(0.5.dp, HairlineBorder, RoundedCornerShape(8.dp))
+                                    .clickable { viewModel.cycleGalleryColumns() }
+                                    .padding(horizontal = 7.dp, vertical = 5.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Icon(Icons.Rounded.GridView, contentDescription = "网格密度", tint = InkSecondary, modifier = Modifier.size(13.dp))
+                                Spacer(Modifier.width(3.dp))
+                                Text("${columns}列", color = InkPrimary, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                            }
+                            IconButton(
+                                onClick = { viewModel.refreshPhotos() },
+                                modifier = Modifier.size(30.dp)
+                            ) {
+                                Icon(Icons.Rounded.Refresh, contentDescription = "刷新", tint = InkSecondary, modifier = Modifier.size(18.dp))
+                            }
                         }
                     }
                 }
@@ -130,7 +143,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     Spacer(Modifier.height(10.dp))
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         SegmentedPillRow(
@@ -138,7 +151,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                             selectedItem = activeSlot,
                             labelProvider = { it.displayName },
                             onSelect = { viewModel.switchStorageSlot(it) },
-                            modifier = Modifier.width(116.dp)
+                            modifier = Modifier.width(104.dp)
                         )
                         SegmentedPillRow(
                             items = PhotoFormatFilter.entries,
@@ -147,6 +160,34 @@ fun GalleryScreen(viewModel: MainViewModel) {
                             onSelect = { viewModel.setFormatFilter(it) },
                             modifier = Modifier.weight(1f)
                         )
+                        // RAW+JPG Merge Toggle Chip
+                        Row(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(if (pairRawJpg) PentaxGreen.copy(alpha = 0.16f) else ObsidianBg)
+                                .border(
+                                    0.5.dp,
+                                    if (pairRawJpg) PentaxGreen else HairlineBorder,
+                                    RoundedCornerShape(9.dp)
+                                )
+                                .clickable { viewModel.togglePairRawJpg() }
+                                .padding(horizontal = 8.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Rounded.Layers,
+                                contentDescription = "合并RAW+JPG",
+                                tint = if (pairRawJpg) PentaxGreen else InkSecondary,
+                                modifier = Modifier.size(13.dp)
+                            )
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                text = "合并",
+                                color = if (pairRawJpg) PentaxGreen else InkSecondary,
+                                fontSize = 11.sp,
+                                fontWeight = if (pairRawJpg) FontWeight.SemiBold else FontWeight.Normal
+                            )
+                        }
                     }
                 }
             }
@@ -158,7 +199,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     onConnectWifi = { viewModel.smartConnectPentaxWifi() },
                     onEnableMock = { viewModel.toggleMockMode(true) }
                 )
-            } else if (isLoading && filteredPhotos.isEmpty()) {
+            } else if (isLoading && photos.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         CircularProgressIndicator(color = PentaxGreen, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
@@ -166,23 +207,23 @@ fun GalleryScreen(viewModel: MainViewModel) {
                         Text("正在索引 ${activeSlot.displayName}...", color = InkSecondary, fontSize = 13.sp)
                     }
                 }
-            } else if (filteredPhotos.isEmpty()) {
+            } else if (photos.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text("当前筛选条件下暂无照片", color = InkSecondary, fontSize = 13.sp)
                 }
             } else {
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
+                    columns = GridCells.Fixed(columns),
                     contentPadding = PaddingValues(
                         start = 2.dp, end = 2.dp, top = 4.dp,
-                        bottom = if (selectedIds.isNotEmpty()) 88.dp else 16.dp
+                        bottom = if (selectedIds.isNotEmpty()) 96.dp else 20.dp
                     ),
                     horizontalArrangement = Arrangement.spacedBy(2.dp),
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                     modifier = Modifier.fillMaxSize()
                 ) {
                     groupedPhotos.forEach { (dateGroup, itemsInGroup) ->
-                        item(span = { GridItemSpan(3) }) {
+                        item(span = { GridItemSpan(columns) }) {
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -194,8 +235,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                                     text = dateGroup,
                                     color = InkPrimary,
                                     fontSize = 13.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    letterSpacing = 0.3.sp
+                                    fontWeight = FontWeight.SemiBold
                                 )
                                 Text(
                                     text = "${itemsInGroup.size} 张",
@@ -228,15 +268,15 @@ fun GalleryScreen(viewModel: MainViewModel) {
             }
         }
 
-        // Floating Glass Multi-Select Dock
+        // Floating Glass Multi-Select Action Dock
         if (selectedIds.isNotEmpty()) {
             Surface(
-                color = Color(0xF018181D),
+                color = Color(0xF218181D),
                 shape = RoundedCornerShape(18.dp),
                 shadowElevation = 12.dp,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .padding(horizontal = 14.dp, vertical = 12.dp)
+                    .padding(horizontal = 12.dp, vertical = 12.dp)
                     .fillMaxWidth()
                     .border(0.5.dp, Color(0xFF34343E), RoundedCornerShape(18.dp))
             ) {
@@ -248,7 +288,7 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { viewModel.clearSelection() }, modifier = Modifier.size(34.dp)) {
+                        IconButton(onClick = { viewModel.clearSelection() }, modifier = Modifier.size(32.dp)) {
                             Icon(Icons.Rounded.Close, contentDescription = "取消", tint = InkSecondary, modifier = Modifier.size(18.dp))
                         }
                         Text(
@@ -261,10 +301,10 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     }
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                         IconButton(
-                            onClick = { viewModel.selectAllFiltered(filteredPhotos) },
-                            modifier = Modifier.size(34.dp)
+                            onClick = { viewModel.selectAllVisible() },
+                            modifier = Modifier.size(32.dp)
                         ) {
-                            Icon(Icons.Rounded.SelectAll, contentDescription = "全选", tint = InkSecondary, modifier = Modifier.size(19.dp))
+                            Icon(Icons.Rounded.SelectAll, contentDescription = "全选", tint = InkSecondary, modifier = Modifier.size(18.dp))
                         }
                         Box(
                             modifier = Modifier
@@ -272,10 +312,10 @@ fun GalleryScreen(viewModel: MainViewModel) {
                                 .background(MatteCard)
                                 .border(0.5.dp, HairlineBorder, RoundedCornerShape(10.dp))
                                 .clickable {
-                                    val chosen = filteredPhotos.filter { selectedIds.contains(it.uniqueId) }
+                                    val chosen = photos.filter { selectedIds.contains(it.uniqueId) }
                                     viewModel.enqueueDownload(chosen, DownloadQuality.VIEW)
                                 }
-                                .padding(horizontal = 12.dp, vertical = 8.dp)
+                                .padding(horizontal = 10.dp, vertical = 8.dp)
                         ) {
                             Text("预览图", color = InkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
                         }
@@ -284,10 +324,10 @@ fun GalleryScreen(viewModel: MainViewModel) {
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(PentaxGreen)
                                 .clickable {
-                                    val chosen = filteredPhotos.filter { selectedIds.contains(it.uniqueId) }
+                                    val chosen = photos.filter { selectedIds.contains(it.uniqueId) }
                                     viewModel.enqueueDownload(chosen, DownloadQuality.FULL_JPG)
                                 }
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                                .padding(horizontal = 11.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Icon(Icons.Rounded.Download, null, tint = Color(0xFF04170B), modifier = Modifier.size(15.dp))
@@ -344,35 +384,38 @@ private fun GalleryGridTile(
             )
         }
 
-        // Minimal RAW / Format Tag
-        if (photo.isRaw) {
+        if (photo.badgeText.isNotBlank()) {
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomStart)
-                    .padding(5.dp)
+                    .padding(4.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(PentaxRed.copy(alpha = 0.90f))
+                    .background(if (photo.hasRawCompanion) Color(0xCC1C1C22) else PentaxRed.copy(alpha = 0.90f))
+                    .border(
+                        width = if (photo.hasRawCompanion) 0.5.dp else 0.dp,
+                        color = if (photo.hasRawCompanion) Color(0x66FFFFFF) else Color.Transparent,
+                        shape = RoundedCornerShape(4.dp)
+                    )
                     .padding(horizontal = 5.dp, vertical = 1.dp)
             ) {
                 Text(
-                    text = photo.extension,
+                    text = photo.badgeText,
                     color = Color.White,
-                    fontSize = 9.sp,
+                    fontSize = 8.sp,
                     fontWeight = FontWeight.Bold,
                     fontFamily = FontFamily.Monospace
                 )
             }
         }
 
-        // Downloaded subtle green dot
         if (photo.isDownloaded && !inSelectionMode) {
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(6.dp)
+                    .padding(5.dp)
                     .size(16.dp)
                     .clip(CircleShape)
-                    .background(Color(0xB8000000)),
+                    .background(Color(0xC2000000)),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(Icons.Rounded.Check, contentDescription = "已下载", tint = PentaxGreen, modifier = Modifier.size(11.dp))
@@ -383,11 +426,11 @@ private fun GalleryGridTile(
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
-                    .padding(6.dp)
+                    .padding(5.dp)
                     .size(20.dp)
                     .clip(CircleShape)
                     .background(if (isSelected) PentaxGreen else Color(0x88000000))
-                    .border(1.5.dp, if (isSelected) PentaxGreen else Color.White.copy(alpha = 0.8f), CircleShape),
+                    .border(1.5.dp, if (isSelected) PentaxGreen else Color.White.copy(alpha = 0.85f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 if (isSelected) {
@@ -421,13 +464,7 @@ private fun DisconnectedHeroView(
                 PentaxK1SilhouetteIcon(tint = InkPrimary, accent = PentaxGreen, modifier = Modifier.size(50.dp))
             }
             Spacer(Modifier.height(20.dp))
-            Text(
-                text = "连接 PENTAX K-1",
-                color = InkPrimary,
-                fontSize = 19.sp,
-                fontWeight = FontWeight.SemiBold,
-                letterSpacing = 0.5.sp
-            )
+            Text("连接 PENTAX K-1", color = InkPrimary, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
             Spacer(Modifier.height(8.dp))
             Text(
                 text = "开启 K-1 机身 Wi-Fi 后点击下方按钮，将自动绑定相机热点并防安卓切回移动数据。",

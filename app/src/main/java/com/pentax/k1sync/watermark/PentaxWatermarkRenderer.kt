@@ -15,6 +15,9 @@ import kotlinx.coroutines.withContext
 import kotlin.math.min
 import kotlin.math.roundToInt
 
+/**
+ * 7 Pentax K-1 watermark templates with 100% consistent accent color mapping and official vector PENTAX wordmark.
+ */
 object PentaxWatermarkRenderer {
 
     suspend fun render(
@@ -48,12 +51,30 @@ object PentaxWatermarkRenderer {
         result
     }
 
-    private fun resolveBrandColorOnLight(accent: PentaxAccentColor): Int {
-        return if (accent == PentaxAccentColor.PLATINUM_WHITE) Color.rgb(20, 20, 22) else accent.colorInt
-    }
 
-    private fun resolveBrandColorOnDark(accent: PentaxAccentColor): Int {
-        return if (accent == PentaxAccentColor.CLASSIC_BLACK) Color.rgb(244, 244, 246) else accent.colorInt
+    private fun drawTextFitWidth(
+        canvas: Canvas,
+        text: String,
+        x: Float,
+        y: Float,
+        paint: Paint,
+        maxWidth: Float
+    ) {
+        if (text.isBlank() || maxWidth <= 8f) return
+        val measured = paint.measureText(text)
+        if (measured <= maxWidth) {
+            canvas.drawText(text, x, y, paint)
+        } else {
+            val scaledPaint = Paint(paint).apply {
+                textSize = (paint.textSize * (maxWidth / measured)).coerceAtLeast(paint.textSize * 0.58f)
+            }
+            var finalStr = text
+            while (finalStr.length > 3 && scaledPaint.measureText("$finalStr…") > maxWidth) {
+                finalStr = finalStr.dropLast(1)
+            }
+            val display = if (finalStr.length < text.length) "$finalStr…" else finalStr
+            canvas.drawText(display, x, y, scaledPaint)
+        }
     }
 
     private fun buildSubInfoLine(cfg: WatermarkConfig): String = buildString {
@@ -65,7 +86,7 @@ object PentaxWatermarkRenderer {
     }
 
     /**
-     * Templates 1 & 5: Classic Dual-Column Divider (Light Gallery White OR Darkroom Obsidian Black)
+     * Templates 1 & 5: Classic Dual-Column Divider (Light White OR Darkroom Obsidian Black)
      */
     private fun renderClassicDivider(src: Bitmap, cfg: WatermarkConfig, darkTheme: Boolean): Bitmap {
         val w = src.width
@@ -73,59 +94,42 @@ object PentaxWatermarkRenderer {
         val shortEdge = min(w, h).toFloat()
         val barH = (shortEdge * 0.148f).roundToInt().coerceAtLeast(84)
 
-        val bgColor = if (darkTheme) Color.rgb(14, 14, 16) else Color.WHITE
-        val primaryText = if (darkTheme) Color.rgb(244, 244, 246) else Color.rgb(20, 20, 22)
-        val secondaryText = if (darkTheme) Color.rgb(148, 148, 156) else Color.rgb(134, 134, 142)
-        val dividerColor = if (darkTheme) Color.rgb(54, 54, 60) else Color.rgb(214, 214, 218)
-        val logoColor = if (darkTheme) resolveBrandColorOnDark(cfg.accentColor) else resolveBrandColorOnLight(cfg.accentColor)
+        val bgColor = if (darkTheme) Color.rgb(15, 15, 18) else Color.WHITE
+        val primaryText = if (darkTheme) Color.rgb(242, 242, 246) else Color.rgb(20, 20, 22)
+        val secondaryText = if (darkTheme) Color.rgb(154, 154, 164) else Color.rgb(134, 134, 142)
+        val brandColor = cfg.resolveAccentForSurface(isDarkSurface = darkTheme)
+        val dividerColor = if (darkTheme) Color.rgb(58, 58, 66) else Color.rgb(214, 214, 218)
 
         val out = Bitmap.createBitmap(w, h + barH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
         canvas.drawColor(bgColor)
         canvas.drawBitmap(src, 0f, 0f, Paint(Paint.FILTER_BITMAP_FLAG))
 
-        // Subtle hairline separator between photo & footer on dark theme
         if (darkTheme) {
-            val lineP = Paint().apply { color = Color.rgb(34, 34, 38); strokeWidth = (shortEdge * 0.002f).coerceAtLeast(1f) }
+            val lineP = Paint().apply {
+                color = if (cfg.accentColor == PentaxAccentColor.CHAMPAGNE_GOLD) {
+                    Color.argb(120, 212, 168, 76)
+                } else {
+                    Color.rgb(38, 38, 44)
+                }
+                strokeWidth = (shortEdge * 0.0022f).coerceAtLeast(1.2f)
+            }
             canvas.drawLine(0f, h.toFloat(), w.toFloat(), h.toFloat(), lineP)
         }
 
         val padX = w * 0.046f
         val barCenterY = h + barH / 2f
 
-        // Left: Camera Model (+ lens subtitle ONLY if non-empty & enabled)
-        val hasLens = cfg.showLensName && cfg.lensTitle.isNotBlank()
-        val camPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = primaryText
-            textSize = barH * 0.245f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            letterSpacing = 0.04f
-        }
-        val modelStr = cfg.cameraTitle.ifBlank { "PENTAX K-1" }
-        if (hasLens) {
-            canvas.drawText(modelStr, padX, barCenterY - barH * 0.04f, camPaint)
-            val lensPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = secondaryText
-                textSize = barH * 0.148f
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            }
-            canvas.drawText(cfg.lensTitle, padX, barCenterY + barH * 0.22f, lensPaint)
-        } else {
-            val baseY = barCenterY - (camPaint.descent() + camPaint.ascent()) / 2f
-            canvas.drawText(modelStr, padX, baseY, camPaint)
-        }
-
-        // Right: EXIF top line + Date/Signature bottom line
+        val portraitScale = if (h > w) 0.84f else 1.0f
         val exifPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = primaryText
-            textSize = barH * 0.205f
+            textSize = barH * 0.205f * portraitScale
             typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
             letterSpacing = 0.015f
         }
         val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = secondaryText
-            textSize = barH * 0.155f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+            textSize = barH * 0.155f * portraitScale
             letterSpacing = 0.02f
         }
 
@@ -135,43 +139,62 @@ object PentaxWatermarkRenderer {
             exifPaint.measureText(exifStr),
             if (subStr.isNotBlank()) subPaint.measureText(subStr) else 0f
         )
-        val rightBlockLeft = (w - padX - rightBlockW).coerceAtLeast(w * 0.54f)
+        val rightBlockLeft = (w - padX - rightBlockW).coerceAtLeast(w * 0.56f)
+        val maxRightW = (w - padX - rightBlockLeft).coerceAtLeast(w * 0.25f)
 
         if (subStr.isNotBlank() && exifStr.isNotBlank()) {
-            canvas.drawText(exifStr, rightBlockLeft, barCenterY - barH * 0.04f, exifPaint)
-            canvas.drawText(subStr, rightBlockLeft, barCenterY + barH * 0.22f, subPaint)
+            drawTextFitWidth(canvas, exifStr, rightBlockLeft, barCenterY - barH * 0.04f, exifPaint, maxRightW)
+            drawTextFitWidth(canvas, subStr, rightBlockLeft, barCenterY + barH * 0.22f, subPaint, maxRightW)
         } else {
             val onlyText = exifStr.ifBlank { subStr }
             val p = if (exifStr.isNotBlank()) exifPaint else subPaint
             val baseY = barCenterY - (p.descent() + p.ascent()) / 2f
-            canvas.drawText(onlyText, rightBlockLeft, baseY, p)
+            drawTextFitWidth(canvas, onlyText, rightBlockLeft, baseY, p, maxRightW)
         }
 
-        // Hairline vertical divider
-        val divX = rightBlockLeft - barH * 0.21f
+        val divX = rightBlockLeft - barH * 0.19f * portraitScale
         val divPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = dividerColor
             strokeWidth = (barH * 0.014f).coerceAtLeast(1.5f)
         }
         canvas.drawLine(divX, barCenterY - barH * 0.25f, divX, barCenterY + barH * 0.25f, divPaint)
 
-        // Official geometric PENTAX Vector Wordmark to the left of the vertical divider
-        val logoH = barH * 0.22f
+        val logoH = barH * 0.21f * portraitScale
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
-        val logoRight = divX - barH * 0.22f
-        val logoRect = RectF(
-            logoRight - logoW,
-            barCenterY - logoH / 2f,
-            logoRight,
-            barCenterY + logoH / 2f
+        val logoRight = divX - barH * 0.19f * portraitScale
+        val logoLeft = logoRight - logoW
+        PentaxBrandVector.drawPentaxWordmark(
+            canvas,
+            RectF(logoLeft, barCenterY - logoH / 2f, logoRight, barCenterY + logoH / 2f),
+            brandColor
         )
-        PentaxBrandVector.drawPentaxWordmark(canvas, logoRect, logoColor)
+
+        val hasLens = cfg.showLensName && cfg.lensTitle.isNotBlank()
+        val maxLeftW = (logoLeft - padX - barH * 0.14f).coerceAtLeast(w * 0.18f)
+        val camPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = primaryText
+            textSize = barH * 0.24f * portraitScale
+            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+            letterSpacing = 0.04f
+        }
+        val modelStr = cfg.cameraTitle.ifBlank { "PENTAX K-1" }
+        if (hasLens) {
+            drawTextFitWidth(canvas, modelStr, padX, barCenterY - barH * 0.04f, camPaint, maxLeftW)
+            val lensPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = secondaryText
+                textSize = barH * 0.145f * portraitScale
+            }
+            drawTextFitWidth(canvas, cfg.lensTitle, padX, barCenterY + barH * 0.22f, lensPaint, maxLeftW)
+        } else {
+            val baseY = barCenterY - (camPaint.descent() + camPaint.ascent()) / 2f
+            drawTextFitWidth(canvas, modelStr, padX, baseY, camPaint, maxLeftW)
+        }
 
         return out
     }
 
     /**
-     * Template 2: Minimal White Accent Border
+     * Template 2: Minimal White Border — colored official PENTAX vector wordmark + model + accent square
      */
     private fun renderMinimalWhite(src: Bitmap, cfg: WatermarkConfig): Bitmap {
         val w = src.width
@@ -186,7 +209,7 @@ object PentaxWatermarkRenderer {
 
         if (cfg.showOverlaySignature && cfg.signature.isNotBlank()) {
             val ovPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(230, 255, 255, 255)
+                color = Color.argb(232, 255, 255, 255)
                 textSize = shortEdge * 0.024f
                 typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
                 textAlign = Paint.Align.CENTER
@@ -197,22 +220,25 @@ object PentaxWatermarkRenderer {
 
         val padX = w * 0.048f
         val barCenterY = h + barH / 2f
-        val accent = resolveBrandColorOnLight(cfg.accentColor)
+        val brandColor = cfg.resolveAccentForSurface(isDarkSurface = false)
         val hasLens = cfg.showLensName && cfg.lensTitle.isNotBlank()
 
-        // Official PENTAX vector wordmark + K-1 badge + accent dot on left
         val logoH = barH * 0.215f
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
         val logoTop = if (hasLens) barCenterY - barH * 0.22f else barCenterY - logoH / 2f
-        PentaxBrandVector.drawPentaxWordmark(canvas, RectF(padX, logoTop, padX + logoW, logoTop + logoH), Color.rgb(20, 20, 22))
+        PentaxBrandVector.drawPentaxWordmark(
+            canvas,
+            RectF(padX, logoTop, padX + logoW, logoTop + logoH),
+            brandColor
+        )
 
         val modelSuffix = cfg.cameraTitle.replace("PENTAX", "", ignoreCase = true).trim()
         var cursorX = padX + logoW + barH * 0.12f
         if (modelSuffix.isNotBlank()) {
             val sufPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.rgb(34, 34, 38)
-                textSize = barH * 0.26f
-                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+                color = Color.rgb(26, 26, 28)
+                textSize = barH * 0.255f
+                typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
                 letterSpacing = 0.04f
             }
             val sufY = (logoTop + logoH / 2f) - (sufPaint.descent() + sufPaint.ascent()) / 2f
@@ -222,7 +248,7 @@ object PentaxWatermarkRenderer {
 
         val sqSize = barH * 0.11f
         val sqBottom = logoTop + logoH
-        val sqPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = accent }
+        val sqPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = brandColor }
         canvas.drawRoundRect(
             RectF(cursorX, sqBottom - sqSize, cursorX + sqSize, sqBottom),
             sqSize * 0.18f, sqSize * 0.18f, sqPaint
@@ -236,11 +262,9 @@ object PentaxWatermarkRenderer {
             canvas.drawText(cfg.lensTitle, padX, barCenterY + barH * 0.26f, lensPaint)
         }
 
-        // Right: Single-line crisp EXIF + optional date
         val exifPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(26, 26, 28)
             textSize = barH * 0.22f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
             textAlign = Paint.Align.RIGHT
             letterSpacing = 0.015f
         }
@@ -263,7 +287,7 @@ object PentaxWatermarkRenderer {
     }
 
     /**
-     * Template 3: Ambient Blurred Photo Frame with Rounded Card & Soft Drop Shadow
+     * Template 3: Ambient Blurred Frame — colored PENTAX emblem + crisp white EXIF
      */
     private fun renderBlurFrame(src: Bitmap, cfg: WatermarkConfig): Bitmap {
         val w = src.width
@@ -279,7 +303,6 @@ object PentaxWatermarkRenderer {
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
 
-        // Creamy blurred background
         val blurThumbW = 240
         val blurThumbH = (blurThumbW * (outH.toFloat() / outW)).roundToInt().coerceIn(120, 420)
         val tiny = Bitmap.createScaledBitmap(src, blurThumbW, blurThumbH, true)
@@ -288,17 +311,15 @@ object PentaxWatermarkRenderer {
         canvas.drawBitmap(blurred, null, Rect(0, 0, outW, outH), Paint(Paint.FILTER_BITMAP_FLAG))
         blurred.recycle()
 
-        // Atmospheric bottom scrim
         val scrim = Paint().apply {
             shader = LinearGradient(
-                0f, outH * 0.58f, 0f, outH.toFloat(),
-                intArrayOf(Color.TRANSPARENT, Color.argb(145, 6, 8, 12)),
+                0f, outH * 0.56f, 0f, outH.toFloat(),
+                intArrayOf(Color.TRANSPARENT, Color.argb(155, 6, 8, 12)),
                 null, Shader.TileMode.CLAMP
             )
         }
         canvas.drawRect(0f, 0f, outW.toFloat(), outH.toFloat(), scrim)
 
-        // Elevation shadow + rounded photo card
         val photoRect = RectF(padX.toFloat(), padTop.toFloat(), (padX + w).toFloat(), (padTop + h).toFloat())
         val cornerR = shortEdge * 0.025f
         val shadowPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
@@ -312,17 +333,16 @@ object PentaxWatermarkRenderer {
         canvas.drawBitmap(src, photoRect.left, photoRect.top, Paint(Paint.FILTER_BITMAP_FLAG))
         canvas.restoreToCount(saved)
 
-        // Bottom centered official PENTAX vector emblem + K-1 + EXIF
         val footerTop = padTop + h
         val centerX = outW / 2f
+        val brandColor = cfg.resolveAccentForSurface(isDarkSurface = true)
 
         val logoH = padBottom * 0.21f
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
         val modelSuffix = cfg.cameraTitle.replace("PENTAX", "", ignoreCase = true).trim()
         val modelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(238, 255, 255, 255)
+            color = Color.argb(242, 255, 255, 255)
             textSize = padBottom * 0.22f
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
             letterSpacing = 0.06f
             setShadowLayer(padBottom * 0.05f, 0f, padBottom * 0.02f, Color.argb(150, 0, 0, 0))
         }
@@ -335,26 +355,24 @@ object PentaxWatermarkRenderer {
         PentaxBrandVector.drawPentaxWordmark(
             canvas,
             RectF(startX, logoTop, startX + logoW, logoTop + logoH),
-            Color.WHITE,
+            brandColor,
             shadowRadius = padBottom * 0.05f,
-            shadowColor = Color.argb(160, 0, 0, 0)
+            shadowColor = Color.argb(165, 0, 0, 0)
         )
         if (modelSuffix.isNotBlank()) {
             val sufY = (logoTop + logoH / 2f) - (modelPaint.descent() + modelPaint.ascent()) / 2f
             canvas.drawText(modelSuffix, startX + logoW + gap, sufY, modelPaint)
         }
 
-        // Accent micro-bar beneath PENTAX logo
         val barPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = resolveBrandColorOnDark(cfg.accentColor)
-            strokeWidth = (padBottom * 0.024f).coerceAtLeast(2f)
+            color = brandColor
+            strokeWidth = (padBottom * 0.022f).coerceAtLeast(2f)
             strokeCap = Paint.Cap.ROUND
         }
         canvas.drawLine(startX, logoTop + logoH + padBottom * 0.065f, startX + logoW, logoTop + logoH + padBottom * 0.065f, barPaint)
 
-        // Line 2: EXIF + optional lens/signature
         val exifPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(220, 240, 244, 248)
+            color = Color.argb(225, 242, 245, 248)
             textSize = padBottom * 0.16f
             textAlign = Paint.Align.CENTER
             letterSpacing = 0.03f
@@ -375,7 +393,7 @@ object PentaxWatermarkRenderer {
     }
 
     /**
-     * Template 4: Museum Gallery / Polaroid All-Around White Mat Frame
+     * Template 4: Museum Gallery Mat Frame
      */
     private fun renderGalleryPolaroid(src: Bitmap, cfg: WatermarkConfig): Bitmap {
         val w = src.width
@@ -390,11 +408,10 @@ object PentaxWatermarkRenderer {
         val outH = h + topPad + bottomPad
         val out = Bitmap.createBitmap(outW, outH, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(out)
-        canvas.drawColor(Color.rgb(252, 252, 250)) // Archival warm museum paper white
+        canvas.drawColor(Color.rgb(252, 252, 250))
 
         canvas.drawBitmap(src, sidePad.toFloat(), topPad.toFloat(), Paint(Paint.FILTER_BITMAP_FLAG))
 
-        // Crisp hairline border around photo
         val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(226, 226, 222)
             style = Paint.Style.STROKE
@@ -402,10 +419,9 @@ object PentaxWatermarkRenderer {
         }
         canvas.drawRect(sidePad.toFloat(), topPad.toFloat(), (sidePad + w).toFloat(), (topPad + h).toFloat(), framePaint)
 
-        // Centered Official PENTAX Vector Wordmark
         val footerTop = topPad + h
         val centerX = outW / 2f
-        val logoColor = resolveBrandColorOnLight(cfg.accentColor)
+        val brandColor = cfg.resolveAccentForSurface(isDarkSurface = false)
         val logoH = bottomPad * 0.165f
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
         val logoTop = footerTop + bottomPad * 0.24f
@@ -413,10 +429,9 @@ object PentaxWatermarkRenderer {
         PentaxBrandVector.drawPentaxWordmark(
             canvas,
             RectF(centerX - logoW / 2f, logoTop, centerX + logoW / 2f, logoTop + logoH),
-            logoColor
+            brandColor
         )
 
-        // Centered Camera + Lens subtitle
         val modelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(34, 34, 38)
             textSize = bottomPad * 0.135f
@@ -433,7 +448,6 @@ object PentaxWatermarkRenderer {
         }
         canvas.drawText(titleLine, centerX, footerTop + bottomPad * 0.59f, modelPaint)
 
-        // Centered EXIF + Date
         val metaPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.rgb(122, 122, 128)
             textSize = bottomPad * 0.118f
@@ -455,7 +469,7 @@ object PentaxWatermarkRenderer {
     }
 
     /**
-     * Template 6: 35mm Classic Film Strip Frame with Sprocket Holes & Amber Edge Markings
+     * Template 6: 35mm Classic Film Strip Frame (Respects chosen brand accent color!)
      */
     private fun renderFilm35mm(src: Bitmap, cfg: WatermarkConfig): Bitmap {
         val w = src.width
@@ -474,7 +488,6 @@ object PentaxWatermarkRenderer {
 
         canvas.drawBitmap(src, sidePad.toFloat(), topFilmH.toFloat(), Paint(Paint.FILTER_BITMAP_FLAG))
 
-        // Sprocket holes along top & bottom film rebates
         val holePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(232, 228, 220) }
         val holeW = shortEdge * 0.026f
         val holeH = shortEdge * 0.036f
@@ -490,10 +503,14 @@ object PentaxWatermarkRenderer {
             hx += pitch
         }
 
-        // Amber Kodak/Pentax film rebate imprint
-        val amberColor = Color.rgb(232, 162, 68)
+        // Respects user's selected color; falls back to classic Kodak film amber if Classic Black is chosen
+        val imprintColor = if (cfg.accentColor == PentaxAccentColor.CLASSIC_BLACK) {
+            Color.rgb(232, 162, 68)
+        } else {
+            cfg.accentColor.colorInt
+        }
         val edgePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = amberColor
+            color = imprintColor
             textSize = topFilmH * 0.25f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             letterSpacing = 0.08f
@@ -503,14 +520,13 @@ object PentaxWatermarkRenderer {
         edgePaint.textAlign = Paint.Align.RIGHT
         canvas.drawText("PENTAX K-MOUNT ◀", outW - sidePad * 1.4f, topTextY, edgePaint)
 
-        // Bottom rebate: Official PENTAX Vector Wordmark + EXIF
         val botTextY = topFilmH + h + bottomFilmH * 0.36f
         val logoH = bottomFilmH * 0.22f
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
         PentaxBrandVector.drawPentaxWordmark(
             canvas,
             RectF(sidePad * 1.4f, botTextY - logoH * 0.78f, sidePad * 1.4f + logoW, botTextY + logoH * 0.22f),
-            amberColor
+            imprintColor
         )
 
         val botMeta = buildString {
@@ -531,7 +547,7 @@ object PentaxWatermarkRenderer {
     }
 
     /**
-     * Template 7: Borderless Overlay (Preserves original 3:2 aspect ratio, zero frame cropping)
+     * Template 7: Borderless Minimal Corner Overlay (Preserves original aspect ratio)
      */
     private fun renderOverlayMinimal(src: Bitmap, cfg: WatermarkConfig): Bitmap {
         val w = src.width
@@ -541,12 +557,11 @@ object PentaxWatermarkRenderer {
         val out = src.copy(Bitmap.Config.ARGB_8888, true)
         val canvas = Canvas(out)
 
-        // Subtle dark gradient scrim at bottom 16% for guaranteed legibility
         val scrimH = shortEdge * 0.18f
         val scrimPaint = Paint().apply {
             shader = LinearGradient(
                 0f, h - scrimH, 0f, h.toFloat(),
-                intArrayOf(Color.TRANSPARENT, Color.argb(168, 0, 0, 0)),
+                intArrayOf(Color.TRANSPARENT, Color.argb(175, 0, 0, 0)),
                 null, Shader.TileMode.CLAMP
             )
         }
@@ -557,20 +572,21 @@ object PentaxWatermarkRenderer {
         val logoH = shortEdge * 0.029f
         val logoW = logoH * PentaxBrandVector.WORDMARK_ASPECT
         val hasLens = cfg.showLensName && cfg.lensTitle.isNotBlank()
+        val brandColor = cfg.resolveAccentForSurface(isDarkSurface = true)
 
         val logoBottom = if (hasLens) h - padBottom - shortEdge * 0.028f else h - padBottom
         PentaxBrandVector.drawPentaxWordmark(
             canvas,
             RectF(padX, logoBottom - logoH, padX + logoW, logoBottom),
-            Color.WHITE,
+            brandColor,
             shadowRadius = shortEdge * 0.008f,
-            shadowColor = Color.argb(180, 0, 0, 0)
+            shadowColor = Color.argb(185, 0, 0, 0)
         )
 
         val modelSuffix = cfg.cameraTitle.replace("PENTAX", "", ignoreCase = true).trim()
         if (modelSuffix.isNotBlank()) {
             val sufPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = resolveBrandColorOnDark(cfg.accentColor)
+                color = Color.WHITE
                 textSize = logoH * 1.15f
                 typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
                 setShadowLayer(shortEdge * 0.008f, 0f, shortEdge * 0.003f, Color.argb(180, 0, 0, 0))
@@ -580,16 +596,15 @@ object PentaxWatermarkRenderer {
 
         if (hasLens) {
             val lensPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(210, 235, 235, 240)
+                color = Color.argb(215, 235, 235, 240)
                 textSize = shortEdge * 0.020f
                 setShadowLayer(shortEdge * 0.006f, 0f, shortEdge * 0.002f, Color.argb(180, 0, 0, 0))
             }
             canvas.drawText(cfg.lensTitle, padX, h - padBottom, lensPaint)
         }
 
-        // Bottom right: EXIF + date
         val rightPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = Color.argb(240, 255, 255, 255)
+            color = Color.argb(242, 255, 255, 255)
             textSize = shortEdge * 0.024f
             typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
             textAlign = Paint.Align.RIGHT
@@ -600,7 +615,7 @@ object PentaxWatermarkRenderer {
         if (subLine.isNotBlank() && exifLine.isNotBlank()) {
             canvas.drawText(exifLine, w - padX, h - padBottom - shortEdge * 0.028f, rightPaint)
             val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.argb(200, 225, 225, 230)
+                color = Color.argb(205, 225, 225, 230)
                 textSize = shortEdge * 0.019f
                 textAlign = Paint.Align.RIGHT
                 setShadowLayer(shortEdge * 0.006f, 0f, shortEdge * 0.002f, Color.argb(180, 0, 0, 0))

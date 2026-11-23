@@ -79,10 +79,20 @@ data class CameraPhoto(
     val dateGroup: String,
     val isRaw: Boolean,
     val isDownloaded: Boolean = false,
-    val exif: PhotoExif? = null
+    val exif: PhotoExif? = null,
+    val companionRaw: CameraPhoto? = null
 ) {
     val uniqueId: String get() = "${slot.apiName}/$dir/$file"
+    val baseName: String get() = file.substringBeforeLast('.')
     val extension: String get() = file.substringAfterLast('.', "").uppercase()
+    val hasRawCompanion: Boolean get() = companionRaw != null
+    val hasAnyRaw: Boolean get() = isRaw || companionRaw != null
+    val badgeText: String
+        get() = when {
+            companionRaw != null -> "RAW+JPG"
+            isRaw -> extension
+            else -> ""
+        }
 }
 
 data class ShootingParams(

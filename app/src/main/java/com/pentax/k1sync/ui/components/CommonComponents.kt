@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -15,11 +16,16 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
@@ -33,6 +39,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pentax.k1sync.model.CameraInfo
 import com.pentax.k1sync.model.HistogramData
+import com.pentax.k1sync.model.TransferStatus
+import com.pentax.k1sync.model.TransferTask
 import com.pentax.k1sync.ui.theme.HairlineBorder
 import com.pentax.k1sync.ui.theme.InkPrimary
 import com.pentax.k1sync.ui.theme.InkSecondary
@@ -53,12 +61,7 @@ fun PentaxBrandHeader(modifier: Modifier = Modifier) {
             letterSpacing = 2.2.sp
         )
         Spacer(Modifier.width(7.dp))
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .height(12.dp)
-                .background(HairlineBorder)
-        )
+        Box(modifier = Modifier.width(1.dp).height(12.dp).background(HairlineBorder))
         Spacer(Modifier.width(7.dp))
         Text(
             text = "K-1",
@@ -95,12 +98,7 @@ fun ConnectionPillBadge(
             .padding(horizontal = 10.dp, vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Box(
-            modifier = Modifier
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(dotColor)
-        )
+        Box(modifier = Modifier.size(6.dp).clip(CircleShape).background(dotColor))
         Spacer(Modifier.width(6.dp))
         Text(
             text = label,
@@ -141,7 +139,7 @@ fun <T> SegmentedPillRow(
                         else Modifier
                     )
                     .clickable { onSelect(item) }
-                    .padding(vertical = 7.dp, horizontal = 6.dp),
+                    .padding(vertical = 7.dp, horizontal = 4.dp),
                 contentAlignment = Alignment.Center
             ) {
                 Text(
@@ -191,8 +189,8 @@ fun PentaxK1SilhouetteIcon(
         val cx = w * 0.50f
         val cy = h * 0.61f
         val rad = h * 0.17f
-        drawCircle(color = tint, radius = rad, center = androidx.compose.ui.geometry.Offset(cx, cy), style = stroke)
-        drawCircle(color = accent, radius = rad * 0.55f, center = androidx.compose.ui.geometry.Offset(cx, cy), style = Stroke(width = sw * 0.9f))
+        drawCircle(color = tint, radius = rad, center = Offset(cx, cy), style = stroke)
+        drawCircle(color = accent, radius = rad * 0.55f, center = Offset(cx, cy), style = Stroke(width = sw * 0.9f))
     }
 }
 
@@ -206,9 +204,7 @@ fun RgbHistogramView(
             .fillMaxWidth()
             .height(48.dp)
             .clip(RoundedCornerShape(8.dp))
-            .background(
-                Brush.verticalGradient(listOf(Color(0xCC0D0D10), Color(0xEE08080A)))
-            )
+            .background(Brush.verticalGradient(listOf(Color(0xCC0D0D10), Color(0xEE08080A))))
             .border(0.5.dp, HairlineBorder, RoundedCornerShape(8.dp))
             .padding(horizontal = 4.dp, vertical = 3.dp)
     ) {
@@ -232,5 +228,64 @@ fun RgbHistogramView(
         drawChannel(histogram.green, Color(0x5530D158))
         drawChannel(histogram.blue, Color(0x550A84FF))
         drawChannel(histogram.luma, Color(0x66FFFFFF))
+    }
+}
+
+@Composable
+fun GlobalTransferProgressBar(
+    tasks: List<TransferTask>,
+    onClickQueue: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val active = tasks.filter { it.status == TransferStatus.QUEUED || it.status == TransferStatus.DOWNLOADING }
+    if (active.isEmpty()) return
+
+    val current = active.firstOrNull { it.status == TransferStatus.DOWNLOADING } ?: active.first()
+    val completed = tasks.count { it.status == TransferStatus.COMPLETED }
+    val total = active.size + completed
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(Color(0xF2181B1A))
+            .border(0.5.dp, PentaxGreen.copy(alpha = 0.45f), RoundedCornerShape(12.dp))
+            .clickable { onClickQueue() }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
+                Icon(Icons.Rounded.Download, null, tint = PentaxGreen, modifier = Modifier.size(15.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = "传输中 (${completed + 1}/$total) · ${current.photo.file}",
+                    color = InkPrimary,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Medium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                text = "${(current.progress * 100).toInt()}%",
+                color = PentaxGreen,
+                fontSize = 11.sp,
+                fontFamily = FontFamily.Monospace,
+                fontWeight = FontWeight.Bold
+            )
+        }
+        Spacer(Modifier.height(5.dp))
+        LinearProgressIndicator(
+            progress = { current.progress.coerceIn(0f, 1f) },
+            color = PentaxGreen,
+            trackColor = ObsidianBg,
+            modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape)
+        )
     }
 }

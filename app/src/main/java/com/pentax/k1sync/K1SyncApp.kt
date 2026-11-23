@@ -1,7 +1,9 @@
 package com.pentax.k1sync
 
 import android.app.Application
+import com.pentax.k1sync.cache.AppPreferencesStore
 import com.pentax.k1sync.cache.DownloadHistoryStore
+import com.pentax.k1sync.cache.PreviewMemoryCache
 import com.pentax.k1sync.cache.ThumbnailDiskCache
 import com.pentax.k1sync.network.CameraRepository
 import com.pentax.k1sync.network.MockPentaxK1Repository
@@ -18,7 +20,9 @@ class K1SyncApp : Application() {
         val apiClient = PentaxK1ApiClient(binder)
         val mockRepo = MockPentaxK1Repository()
         val thumbCache = ThumbnailDiskCache(this)
+        val previewCache = PreviewMemoryCache()
         val historyStore = DownloadHistoryStore(this)
-        repository = CameraRepository(binder, apiClient, mockRepo, thumbCache, historyStore)
+        val prefsStore = AppPreferencesStore(this)
+        repository = CameraRepository(binder, apiClient, mockRepo, thumbCache, previewCache, historyStore, prefsStore)
     }
 }

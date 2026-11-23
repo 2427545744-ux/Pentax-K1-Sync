@@ -3,21 +3,22 @@ package com.pentax.k1sync.watermark
 import android.graphics.Color
 import com.pentax.k1sync.model.PhotoExif
 
-enum class WatermarkStyle(val title: String, val shortTag: String, val subtitle: String) {
-    CLASSIC_DIVIDER("经典双栏", "白底", "纯白底边 · 官方PENTAX标 · 竖线双行参数"),
-    MINIMAL_WHITE("极简白底", "留白", "纯白底边 · 机型色块 · 极简清爽单行参数"),
-    BLUR_FRAME("毛玻璃框", "虚化", "原图高斯虚化底 · 圆角阴影画框 · 居中铭牌"),
-    GALLERY_POLAROID("美术馆框", "四边", "四边画廊留白 · 内细线框 · 居中官方红标"),
-    DARKROOM_BLACK("暗房黑金", "夜景", "深炭黑边框 · 星空暗调绝配 · 银白精密字"),
-    FILM_35MM("35mm胶片", "复古", "暗黑齿孔底片边 · 琥珀胶片编码与曝光条"),
-    OVERLAY_MINIMAL("无框角标", "原比例", "不加边框不裁切 · 底部微暗角官方徽标参数")
+enum class WatermarkStyle(val title: String, val shortTag: String, val subtitle: String, val isDarkBackground: Boolean) {
+    CLASSIC_DIVIDER("经典双栏", "白底", "纯白底边 · 左机型 · 右彩色官方PENTAX标与双行参数", false),
+    MINIMAL_WHITE("极简白底", "留白", "纯白底边 · 左彩色PENTAX标与色块 · 右单行参数", false),
+    BLUR_FRAME("毛玻璃框", "虚化", "原图虚化底 · 圆角阴影画框 · 底部居中PENTAX标", true),
+    GALLERY_POLAROID("美术馆框", "四边", "四边画廊白框 · 极细内框线 · 居中官方PENTAX标", false),
+    DARKROOM_BLACK("暗房黑金", "夜景", "深炭黑底边 · 夜景绝配 · 亮色PENTAX标与银白参数", true),
+    FILM_35MM("35mm胶片", "复古", "暗黑齿孔底片框 · 彩色胶片边码与PENTAX标", true),
+    OVERLAY_MINIMAL("无框角标", "原比例", "原比例不加框 · 底部微暗角PENTAX标与参数", true)
 }
 
 enum class PentaxAccentColor(val label: String, val colorInt: Int) {
     PENTAX_RED("官方红", Color.rgb(208, 18, 42)),
     PENTAX_GREEN("星标绿", Color.rgb(34, 197, 94)),
-    CLASSIC_BLACK("经典黑", Color.rgb(22, 22, 24)),
-    PLATINUM_WHITE("银铂白", Color.rgb(245, 245, 247))
+    CHAMPAGNE_GOLD("香槟金", Color.rgb(212, 168, 76)),
+    CLASSIC_BLACK("极简黑", Color.rgb(22, 22, 24)),
+    PLATINUM_WHITE("银铂白", Color.rgb(244, 244, 247))
 }
 
 data class WatermarkConfig(
@@ -36,6 +37,26 @@ data class WatermarkConfig(
     val showOverlaySignature: Boolean = false,
     val highQualityExport: Boolean = true
 ) {
+    /**
+     * Resolves an always-legible color matching the user's selected accent:
+     * - Official Red, Star Green, Champagne Gold render verbatim on both light & dark frames.
+     * - Platinum White on white paper renders in refined titanium silver (#6A6A74) so it stays visible and distinct from Black.
+     * - Classic Black on dark frames renders in crisp silver-white (#EFEFF4) so it never vanishes on black.
+     */
+    fun resolveAccentForSurface(isDarkSurface: Boolean): Int {
+        return if (isDarkSurface) {
+            when (accentColor) {
+                PentaxAccentColor.CLASSIC_BLACK -> Color.rgb(236, 236, 242)
+                else -> accentColor.colorInt
+            }
+        } else {
+            when (accentColor) {
+                PentaxAccentColor.PLATINUM_WHITE -> Color.rgb(106, 106, 116)
+                else -> accentColor.colorInt
+            }
+        }
+    }
+
     fun buildExifLine(uppercaseF: Boolean = false): String {
         val parts = mutableListOf<String>()
         if (focalLength.isNotBlank()) {
@@ -62,10 +83,6 @@ data class WatermarkConfig(
     }
 
     companion object {
-        /**
-         * Strictly replaces photo-specific EXIF fields from the new image.
-         * Never inherits stale lens/focal/aperture values from a previous photo!
-         */
         fun fromExif(exif: PhotoExif, previous: WatermarkConfig = WatermarkConfig()): WatermarkConfig {
             return previous.copy(
                 cameraTitle = exif.cameraModel.ifBlank { "PENTAX K-1" },

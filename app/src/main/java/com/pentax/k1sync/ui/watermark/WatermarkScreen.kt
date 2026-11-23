@@ -1,5 +1,6 @@
 package com.pentax.k1sync.ui.watermark
 
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -17,9 +18,10 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -28,14 +30,18 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
+import androidx.compose.material.icons.rounded.Collections
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Save
+import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.ZoomIn
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Switch
@@ -57,12 +63,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import com.pentax.k1sync.ui.components.SegmentedPillRow
 import com.pentax.k1sync.ui.theme.ElevatedSurface
 import com.pentax.k1sync.ui.theme.HairlineBorder
@@ -71,7 +76,6 @@ import com.pentax.k1sync.ui.theme.InkSecondary
 import com.pentax.k1sync.ui.theme.MatteCard
 import com.pentax.k1sync.ui.theme.ObsidianBg
 import com.pentax.k1sync.ui.theme.PentaxGreen
-import com.pentax.k1sync.ui.theme.PentaxRed
 import com.pentax.k1sync.ui.theme.SubtleDivider
 import com.pentax.k1sync.viewmodel.MainViewModel
 import com.pentax.k1sync.watermark.PentaxAccentColor
@@ -79,22 +83,28 @@ import com.pentax.k1sync.watermark.WatermarkStyle
 
 private enum class StudioPanelTab(val label: String) {
     TEMPLATES("模板 (7)"),
-    APPEARANCE("外观"),
-    EXIF("参数微调")
+    APPEARANCE("配色外观"),
+    EXIF("镜头参数")
 }
 
 @Composable
 fun WatermarkScreen(viewModel: MainViewModel) {
     val state by viewModel.watermarkState.collectAsState()
+    val lensPresets by viewModel.lensPresets.collectAsState()
     val cfg = state.config
 
     var activePanel by remember { mutableStateOf(StudioPanelTab.TEMPLATES) }
-    var showFullPreview by remember { mutableStateOf(false) }
 
-    val photoPicker = rememberLauncherForActivityResult(
+    val singlePhotoPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickVisualMedia()
     ) { uri ->
         if (uri != null) viewModel.loadLocalPhotoForWatermark(uri)
+    }
+
+    val batchPhotoPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickMultipleVisualMedia(20)
+    ) { uris ->
+        if (uris.isNotEmpty()) viewModel.batchApplyWatermark(uris)
     }
 
     Column(
@@ -102,45 +112,62 @@ fun WatermarkScreen(viewModel: MainViewModel) {
             .fillMaxSize()
             .background(ObsidianBg)
     ) {
-        // 1. Minimal Studio Header
+        // 1. Minimal Studio Header with Single Pick + Multi Batch Watermark
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(ElevatedSurface)
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 14.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text("宾得水印工坊", color = InkPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                Text("官方矢量徽标 · 自动解析 EXIF/MakerNote", color = InkSecondary, fontSize = 11.sp)
+                Text("自动记住偏好 · 支持批量加水印", color = InkSecondary, fontSize = 11.sp)
             }
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(MatteCard)
-                    .border(0.5.dp, HairlineBorder, RoundedCornerShape(10.dp))
-                    .clickable {
-                        photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                    }
-                    .padding(horizontal = 11.dp, vertical = 7.dp),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Icon(Icons.Rounded.AddPhotoAlternate, null, tint = PentaxGreen, modifier = Modifier.size(16.dp))
-                Spacer(Modifier.width(5.dp))
-                Text("选手机图", color = InkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MatteCard)
+                        .border(0.5.dp, HairlineBorder, RoundedCornerShape(10.dp))
+                        .clickable {
+                            singlePhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                        .padding(horizontal = 9.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.AddPhotoAlternate, null, tint = PentaxGreen, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("选图", color = InkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MatteCard)
+                        .border(0.5.dp, HairlineBorder, RoundedCornerShape(10.dp))
+                        .clickable(enabled = state.batchProgress == null) {
+                            batchPhotoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                        }
+                        .padding(horizontal = 9.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(Icons.Rounded.Collections, null, tint = InkPrimary, modifier = Modifier.size(15.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("批量", color = InkPrimary, fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                }
             }
         }
         HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
 
-        // 2. Generous Studio Preview Stage (Proportional weight so image always breathes cleanly)
+        // 2. Live Preview Stage
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1.05f)
+                .weight(1.02f)
                 .background(Color(0xFF070709))
-                .clickable(enabled = state.previewBitmap != null) { showFullPreview = true }
-                .padding(14.dp),
+                .clickable(enabled = state.previewBitmap != null) { viewModel.setWatermarkFullscreen(true) }
+                .padding(12.dp),
             contentAlignment = Alignment.Center
         ) {
             if (state.previewBitmap != null) {
@@ -167,12 +194,34 @@ fun WatermarkScreen(viewModel: MainViewModel) {
             }
         }
 
-        // 3. Sleek Tabbed Control Sheet
+        // Batch Progress Indicator (if running)
+        state.batchProgress?.let { bp ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color(0xFF15221A))
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("正在批量渲染宾得水印...", color = PentaxGreen, fontSize = 11.sp, fontWeight = FontWeight.SemiBold)
+                    Text("${bp.current}/${bp.total}", color = PentaxGreen, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                }
+                Spacer(Modifier.height(4.dp))
+                LinearProgressIndicator(
+                    progress = { bp.current.toFloat() / bp.total.coerceAtLeast(1) },
+                    color = PentaxGreen,
+                    trackColor = ObsidianBg,
+                    modifier = Modifier.fillMaxWidth().height(3.dp).clip(CircleShape)
+                )
+            }
+        }
+
+        // 3. Tabbed Studio Controls
         HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(0.95f)
+                .weight(0.98f)
                 .background(ElevatedSurface)
         ) {
             SegmentedPillRow(
@@ -182,14 +231,10 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                 onSelect = { activePanel = it },
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .padding(horizontal = 14.dp, vertical = 9.dp)
             )
 
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-            ) {
+            Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
                 when (activePanel) {
                     StudioPanelTab.TEMPLATES -> {
                         Column(
@@ -206,9 +251,8 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                     WatermarkTemplateCard(
                                         style = style,
                                         selected = cfg.style == style,
-                                        onClick = {
-                                            viewModel.updateWatermarkConfig { it.copy(style = style) }
-                                        }
+                                        resolvedAccent = Color(cfg.resolveAccentForSurface(style.isDarkBackground)),
+                                        onClick = { viewModel.updateWatermarkConfig { it.copy(style = style) } }
                                     )
                                 }
                             }
@@ -229,16 +273,15 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                 .padding(horizontal = 14.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(10.dp)
                         ) {
-                            Text("官方 PENTAX 徽标配色", color = InkSecondary, fontSize = 12.sp)
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            Text("官方 PENTAX 标与点缀色", color = InkSecondary, fontSize = 12.sp)
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.fillMaxWidth()
                             ) {
-                                PentaxAccentColor.entries.forEach { accent ->
+                                items(PentaxAccentColor.entries) { accent ->
                                     val chosen = cfg.accentColor == accent
                                     Row(
                                         modifier = Modifier
-                                            .weight(1f)
                                             .clip(RoundedCornerShape(10.dp))
                                             .background(if (chosen) MatteCard else ObsidianBg)
                                             .border(
@@ -249,19 +292,23 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                             .clickable {
                                                 viewModel.updateWatermarkConfig { it.copy(accentColor = accent) }
                                             }
-                                            .padding(vertical = 8.dp, horizontal = 4.dp),
-                                        horizontalArrangement = Arrangement.Center,
+                                            .padding(horizontal = 11.dp, vertical = 8.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
                                         Box(
                                             modifier = Modifier
-                                                .size(11.dp)
+                                                .size(12.dp)
                                                 .clip(CircleShape)
                                                 .background(Color(accent.colorInt))
-                                                .border(0.5.dp, Color(0x55FFFFFF), CircleShape)
+                                                .border(0.5.dp, Color(0x66FFFFFF), CircleShape)
                                         )
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(accent.label, color = InkPrimary, fontSize = 11.sp, maxLines = 1)
+                                        Spacer(Modifier.width(6.dp))
+                                        Text(
+                                            accent.label,
+                                            color = if (chosen) PentaxGreen else InkPrimary,
+                                            fontSize = 12.sp,
+                                            fontWeight = if (chosen) FontWeight.SemiBold else FontWeight.Normal
+                                        )
                                     }
                                 }
                             }
@@ -278,7 +325,7 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                     viewModel.updateWatermarkConfig { it.copy(showDateTime = v) }
                                 }
                                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
-                                StudioToggleRow("显示镜头名称（无镜头信息自动隐藏）", cfg.showLensName) { v ->
+                                StudioToggleRow("显示镜头名称（无元数据自动隐藏）", cfg.showLensName) { v ->
                                     viewModel.updateWatermarkConfig { it.copy(showLensName = v) }
                                 }
                                 if (cfg.style == WatermarkStyle.MINIMAL_WHITE) {
@@ -304,6 +351,58 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                 .padding(horizontal = 14.dp, vertical = 4.dp),
                             verticalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
+                            // Custom Lens Quick-Fill Presets (Lifesaver for vintage K/M/A manual lenses!)
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("常用镜头快捷填入（点击即填）", color = InkSecondary, fontSize = 11.sp)
+                                if (cfg.lensTitle.isNotBlank() && !lensPresets.contains(cfg.lensTitle.trim())) {
+                                    Row(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(PentaxGreen.copy(alpha = 0.16f))
+                                            .clickable { viewModel.addLensPreset(cfg.lensTitle) }
+                                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Icon(Icons.Rounded.Add, null, tint = PentaxGreen, modifier = Modifier.size(12.dp))
+                                        Spacer(Modifier.width(2.dp))
+                                        Text("存为常用", color = PentaxGreen, fontSize = 10.sp, fontWeight = FontWeight.SemiBold)
+                                    }
+                                }
+                            }
+                            if (lensPresets.isNotEmpty()) {
+                                LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    items(lensPresets) { preset ->
+                                        val active = cfg.lensTitle == preset
+                                        Row(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .background(if (active) PentaxGreen.copy(alpha = 0.18f) else MatteCard)
+                                                .border(0.5.dp, if (active) PentaxGreen else HairlineBorder, RoundedCornerShape(8.dp))
+                                                .clickable {
+                                                    viewModel.updateWatermarkConfig { it.copy(lensTitle = preset, showLensName = true) }
+                                                }
+                                                .padding(start = 8.dp, end = 4.dp, top = 5.dp, bottom = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(preset, color = if (active) PentaxGreen else InkPrimary, fontSize = 11.sp)
+                                            Spacer(Modifier.width(4.dp))
+                                            Icon(
+                                                Icons.Rounded.Close,
+                                                contentDescription = "删除预设",
+                                                tint = InkSecondary,
+                                                modifier = Modifier
+                                                    .size(14.dp)
+                                                    .clickable { viewModel.removeLensPreset(preset) }
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StudioField("机身型号", cfg.cameraTitle, Modifier.weight(1f)) { v ->
                                     viewModel.updateWatermarkConfig { it.copy(cameraTitle = v) }
@@ -311,7 +410,7 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                 StudioField(
                                     label = if (cfg.lensTitle.isBlank()) "镜头 (留空不显示)" else "镜头名称",
                                     value = cfg.lensTitle,
-                                    modifier = Modifier.weight(1.3f)
+                                    modifier = Modifier.weight(1.35f)
                                 ) { v ->
                                     viewModel.updateWatermarkConfig { it.copy(lensTitle = v) }
                                 }
@@ -344,19 +443,20 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                 }
             }
 
-            // Sticky Export Footer (Always visible!)
+            // Sticky Export + 1-Tap Share Footer
             HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
-            Box(
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .background(ElevatedSurface)
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Row(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .height(46.dp)
-                        .clip(RoundedCornerShape(13.dp))
+                        .weight(1f)
+                        .height(45.dp)
+                        .clip(RoundedCornerShape(12.dp))
                         .background(if (state.isSaving || state.sourceBitmap == null) MatteCard else PentaxGreen)
                         .clickable(enabled = !state.isSaving && state.sourceBitmap != null) {
                             viewModel.exportWatermarkedPhoto()
@@ -367,44 +467,70 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                     if (state.isSaving) {
                         CircularProgressIndicator(color = PentaxGreen, strokeWidth = 2.dp, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(8.dp))
-                        Text("正在高清渲染导出...", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("正在高清导出...", color = InkPrimary, fontSize = 13.sp)
                     } else {
                         Icon(Icons.Rounded.Save, null, tint = Color(0xFF04170B), modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(6.dp))
-                        Text("保存宾得水印照到相册", color = Color(0xFF04170B), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                        Text("保存水印照到相册", color = Color(0xFF04170B), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+
+                Row(
+                    modifier = Modifier
+                        .width(92.dp)
+                        .height(45.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MatteCard)
+                        .border(0.5.dp, HairlineBorder, RoundedCornerShape(12.dp))
+                        .clickable(enabled = !state.isSharing && state.sourceBitmap != null) {
+                            viewModel.shareWatermarkedPhoto()
+                        },
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (state.isSharing) {
+                        CircularProgressIndicator(color = PentaxGreen, strokeWidth = 2.dp, modifier = Modifier.size(16.dp))
+                    } else {
+                        Icon(Icons.Rounded.Share, null, tint = InkPrimary, modifier = Modifier.size(16.dp))
+                        Spacer(Modifier.width(5.dp))
+                        Text("分享", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
                     }
                 }
             }
         }
     }
+}
 
-    // Fullscreen Watermark Inspection Dialog
-    if (showFullPreview && state.previewBitmap != null) {
-        Dialog(
-            onDismissRequest = { showFullPreview = false },
-            properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)
+/**
+ * In-window Fullscreen Watermark Inspection Overlay (No Dialog clipping!)
+ */
+@Composable
+fun WatermarkFullscreenOverlay(viewModel: MainViewModel) {
+    val state by viewModel.watermarkState.collectAsState()
+    if (!state.fullscreenPreview || state.previewBitmap == null) return
+
+    BackHandler { viewModel.setWatermarkFullscreen(false) }
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black)
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .clickable { viewModel.setWatermarkFullscreen(false) },
+        contentAlignment = Alignment.Center
+    ) {
+        Image(
+            bitmap = state.previewBitmap!!.asImageBitmap(),
+            contentDescription = "Fullscreen Watermark Preview",
+            contentScale = ContentScale.Fit,
+            modifier = Modifier.fillMaxSize().padding(12.dp)
+        )
+        IconButton(
+            onClick = { viewModel.setWatermarkFullscreen(false) },
+            modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
         ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black)
-                    .systemBarsPadding()
-                    .clickable { showFullPreview = false },
-                contentAlignment = Alignment.Center
-            ) {
-                Image(
-                    bitmap = state.previewBitmap!!.asImageBitmap(),
-                    contentDescription = "Fullscreen Preview",
-                    contentScale = ContentScale.Fit,
-                    modifier = Modifier.fillMaxSize().padding(12.dp)
-                )
-                IconButton(
-                    onClick = { showFullPreview = false },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(8.dp)
-                ) {
-                    Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White)
-                }
-            }
+            Icon(Icons.Rounded.Close, contentDescription = "关闭", tint = Color.White)
         }
     }
 }
@@ -413,6 +539,7 @@ fun WatermarkScreen(viewModel: MainViewModel) {
 private fun WatermarkTemplateCard(
     style: WatermarkStyle,
     selected: Boolean,
+    resolvedAccent: Color,
     onClick: () -> Unit
 ) {
     Column(
@@ -429,8 +556,11 @@ private fun WatermarkTemplateCard(
             .padding(8.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        // Miniature Visual Wireframe Icon showing the exact frame layout
-        TemplateWireframeThumbnail(style = style, modifier = Modifier.fillMaxWidth().height(54.dp))
+        TemplateWireframeThumbnail(
+            style = style,
+            accent = resolvedAccent,
+            modifier = Modifier.fillMaxWidth().height(54.dp)
+        )
         Spacer(Modifier.height(6.dp))
         Text(
             text = style.title,
@@ -440,66 +570,53 @@ private fun WatermarkTemplateCard(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis
         )
-        Text(
-            text = style.shortTag,
-            color = InkSecondary,
-            fontSize = 9.sp,
-            maxLines = 1
-        )
+        Text(text = style.shortTag, color = InkSecondary, fontSize = 9.sp, maxLines = 1)
     }
 }
 
 @Composable
-private fun TemplateWireframeThumbnail(style: WatermarkStyle, modifier: Modifier = Modifier) {
-    Canvas(
-        modifier = modifier
-            .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFF101014))
-    ) {
+private fun TemplateWireframeThumbnail(style: WatermarkStyle, accent: Color, modifier: Modifier = Modifier) {
+    Canvas(modifier = modifier.clip(RoundedCornerShape(6.dp)).background(Color(0xFF101014))) {
         val w = size.width
         val h = size.height
         val photoColor = Color(0xFF3A4B5C)
         val whitePaper = Color(0xFFF4F4F6)
-        val redMark = PentaxRed
 
         when (style) {
             WatermarkStyle.CLASSIC_DIVIDER -> {
                 drawRect(whitePaper)
-                drawRect(photoColor, topLeft = Offset.Zero, size = Size(w, h * 0.74f))
+                drawRect(photoColor, Offset.Zero, Size(w, h * 0.74f))
                 drawRect(Color(0xFF222226), Offset(w * 0.08f, h * 0.84f), Size(w * 0.24f, h * 0.07f))
-                drawRect(redMark, Offset(w * 0.45f, h * 0.84f), Size(w * 0.16f, h * 0.07f))
+                drawRect(accent, Offset(w * 0.45f, h * 0.84f), Size(w * 0.16f, h * 0.07f))
                 drawRect(Color(0xFF888890), Offset(w * 0.67f, h * 0.82f), Size(w * 0.24f, h * 0.05f))
                 drawRect(Color(0xFFBBBBBF), Offset(w * 0.67f, h * 0.90f), Size(w * 0.18f, h * 0.04f))
             }
             WatermarkStyle.MINIMAL_WHITE -> {
                 drawRect(whitePaper)
-                drawRect(photoColor, topLeft = Offset.Zero, size = Size(w, h * 0.76f))
-                drawRect(Color(0xFF222226), Offset(w * 0.08f, h * 0.85f), Size(w * 0.22f, h * 0.06f))
-                drawRect(redMark, Offset(w * 0.33f, h * 0.86f), Size(h * 0.05f, h * 0.05f))
+                drawRect(photoColor, Offset.Zero, Size(w, h * 0.76f))
+                drawRect(accent, Offset(w * 0.08f, h * 0.85f), Size(w * 0.20f, h * 0.06f))
+                drawRect(Color(0xFF222226), Offset(w * 0.30f, h * 0.85f), Size(w * 0.09f, h * 0.06f))
+                drawRect(accent, Offset(w * 0.41f, h * 0.86f), Size(h * 0.05f, h * 0.05f))
                 drawRect(Color(0xFF55555C), Offset(w * 0.64f, h * 0.85f), Size(w * 0.28f, h * 0.06f))
             }
             WatermarkStyle.BLUR_FRAME -> {
                 drawRect(Color(0xFF293544))
-                drawRoundRect(
-                    color = photoColor,
-                    topLeft = Offset(w * 0.11f, h * 0.10f),
-                    size = Size(w * 0.78f, h * 0.62f),
-                    cornerRadius = CornerRadius(6f, 6f)
-                )
-                drawRect(Color.White, Offset(w * 0.32f, h * 0.80f), Size(w * 0.36f, h * 0.05f))
+                drawRoundRect(photoColor, Offset(w * 0.11f, h * 0.10f), Size(w * 0.78f, h * 0.62f), CornerRadius(6f, 6f))
+                drawRect(accent, Offset(w * 0.32f, h * 0.80f), Size(w * 0.24f, h * 0.05f))
+                drawRect(Color.White, Offset(w * 0.58f, h * 0.80f), Size(w * 0.10f, h * 0.05f))
                 drawRect(Color(0xAAFFFFFF), Offset(w * 0.26f, h * 0.89f), Size(w * 0.48f, h * 0.04f))
             }
             WatermarkStyle.GALLERY_POLAROID -> {
                 drawRect(whitePaper)
                 drawRect(photoColor, Offset(w * 0.10f, h * 0.09f), Size(w * 0.80f, h * 0.58f))
-                drawRect(redMark, Offset(w * 0.37f, h * 0.74f), Size(w * 0.26f, h * 0.06f))
+                drawRect(accent, Offset(w * 0.37f, h * 0.74f), Size(w * 0.26f, h * 0.06f))
                 drawRect(Color(0xFF7A7A82), Offset(w * 0.28f, h * 0.86f), Size(w * 0.44f, h * 0.05f))
             }
             WatermarkStyle.DARKROOM_BLACK -> {
                 drawRect(Color(0xFF101012))
-                drawRect(photoColor, topLeft = Offset.Zero, size = Size(w, h * 0.74f))
+                drawRect(photoColor, Offset.Zero, Size(w, h * 0.74f))
                 drawRect(Color.White, Offset(w * 0.08f, h * 0.84f), Size(w * 0.24f, h * 0.07f))
-                drawRect(PentaxGreen, Offset(w * 0.46f, h * 0.84f), Size(w * 0.16f, h * 0.07f))
+                drawRect(accent, Offset(w * 0.46f, h * 0.84f), Size(w * 0.16f, h * 0.07f))
                 drawRect(Color(0xFFAAAAAA), Offset(w * 0.68f, h * 0.85f), Size(w * 0.24f, h * 0.05f))
             }
             WatermarkStyle.FILM_35MM -> {
@@ -510,12 +627,12 @@ private fun TemplateWireframeThumbnail(style: WatermarkStyle, modifier: Modifier
                     drawRect(Color(0xFFE6E0D6), Offset(x, h * 0.05f), Size(w * 0.07f, h * 0.08f))
                     drawRect(Color(0xFFE6E0D6), Offset(x, h * 0.87f), Size(w * 0.07f, h * 0.08f))
                 }
-                drawRect(Color(0xFFE8A244), Offset(w * 0.08f, h * 0.81f), Size(w * 0.32f, h * 0.04f))
+                drawRect(accent, Offset(w * 0.08f, h * 0.81f), Size(w * 0.32f, h * 0.04f))
             }
             WatermarkStyle.OVERLAY_MINIMAL -> {
                 drawRect(photoColor)
                 drawRect(Color(0x88000000), Offset(0f, h * 0.72f), Size(w, h * 0.28f))
-                drawRect(Color.White, Offset(w * 0.07f, h * 0.82f), Size(w * 0.26f, h * 0.07f))
+                drawRect(accent, Offset(w * 0.07f, h * 0.82f), Size(w * 0.24f, h * 0.07f))
                 drawRect(Color(0xCCFFFFFF), Offset(w * 0.60f, h * 0.83f), Size(w * 0.33f, h * 0.06f))
             }
         }
@@ -523,12 +640,7 @@ private fun TemplateWireframeThumbnail(style: WatermarkStyle, modifier: Modifier
 }
 
 @Composable
-private fun StudioField(
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    onValueChange: (String) -> Unit
-) {
+private fun StudioField(label: String, value: String, modifier: Modifier = Modifier, onValueChange: (String) -> Unit) {
     OutlinedTextField(
         value = value,
         onValueChange = onValueChange,
@@ -557,14 +669,8 @@ private fun StudioToggleRow(label: String, checked: Boolean, onCheckedChange: (B
     ) {
         Text(label, color = InkPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f).padding(end = 8.dp))
         Switch(
-            checked = checked,
-            onCheckedChange = onCheckedChange,
-            colors = SwitchDefaults.colors(
-                checkedThumbColor = Color.White,
-                checkedTrackColor = PentaxGreen,
-                uncheckedTrackColor = ObsidianBg,
-                uncheckedBorderColor = HairlineBorder
-            )
+            checked = checked, onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = PentaxGreen, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
         )
     }
 }

@@ -34,75 +34,78 @@ class PentaxK1ApiClient(
 ) {
     private var activeWebSocket: WebSocket? = null
 
-    private fun buildClient(readTimeoutSec: Long = 15L): OkHttpClient {
+    private fun buildClient(readTimeoutSec: Long = 15L, connectTimeoutSec: Long = 5L): OkHttpClient {
         return OkHttpClient.Builder()
             .socketFactory(wifiBinder.getSocketFactory())
-            .connectTimeout(5, TimeUnit.SECONDS)
+            .connectTimeout(connectTimeoutSec, TimeUnit.SECONDS)
             .readTimeout(readTimeoutSec, TimeUnit.SECONDS)
             .writeTimeout(10, TimeUnit.SECONDS)
             .retryOnConnectionFailure(true)
             .build()
     }
 
-    suspend fun pingAndFetchProps(): Result<Pair<CameraInfo, ShootingParams>> = withContext(Dispatchers.IO) {
-        runCatching {
-            val req = Request.Builder().url("$baseUrl/v1/props").get().build()
-            buildClient(8).newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("HTTP ${resp.code}")
-                val json = JSONObject(resp.body?.string().orEmpty())
+    suspend fun pingAndFetchProps(fastProbe: Boolean = false): Result<Pair<CameraInfo, ShootingParams>> =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                val req = Request.Builder().url("$baseUrl/v1/props").get().build()
+                val cTimeout = if (fastProbe) 2L else 5L
+                val rTimeout = if (fastProbe) 3L else 8L
+                buildClient(rTimeout, cTimeout).newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("HTTP ${resp.code}")
+                    val json = JSONObject(resp.body?.string().orEmpty())
 
-                val model = json.optString("model", "PENTAX K-1").ifBlank { "PENTAX K-1" }
-                val fw = json.optString("firmwareVersion", "")
-                val battery = json.optInt("battery", 100)
+                    val model = json.optString("model", "PENTAX K-1").ifBlank { "PENTAX K-1" }
+                    val fw = json.optString("firmwareVersion", "")
+                    val battery = json.optInt("battery", 100)
 
-                val storagesList = mutableListOf<StorageStatus>()
-                val storagesArr = json.optJSONArray("storages")
-                if (storagesArr != null) {
-                    for (i in 0 until storagesArr.length()) {
-                        val obj = storagesArr.optJSONObject(i) ?: continue
-                        val name = obj.optString("name", "").lowercase()
-                        val slot = if (name.contains("2")) StorageSlot.SD2 else StorageSlot.SD1
-                        storagesList += StorageStatus(
-                            slot = slot,
-                            available = obj.optBoolean("available", obj.optBoolean("equipped", true)),
-                            remainShots = obj.optInt("remain", 0),
-                            format = obj.optString("format", "")
-                        )
+                    val storagesList = mutableListOf<StorageStatus>()
+                    val storagesArr = json.optJSONArray("storages")
+                    if (storagesArr != null) {
+                        for (i in 0 until storagesArr.length()) {
+                            val obj = storagesArr.optJSONObject(i) ?: continue
+                            val name = obj.optString("name", "").lowercase()
+                            val slot = if (name.contains("2")) StorageSlot.SD2 else StorageSlot.SD1
+                            storagesList += StorageStatus(
+                                slot = slot,
+                                available = obj.optBoolean("available", obj.optBoolean("equipped", true)),
+                                remainShots = obj.optInt("remain", 0),
+                                format = obj.optString("format", "")
+                            )
+                        }
                     }
-                }
-                if (storagesList.isEmpty()) {
-                    storagesList += StorageStatus(StorageSlot.SD1, available = true)
-                    storagesList += StorageStatus(StorageSlot.SD2, available = false)
-                }
+                    if (storagesList.isEmpty()) {
+                        storagesList += StorageStatus(StorageSlot.SD1, available = true)
+                        storagesList += StorageStatus(StorageSlot.SD2, available = false)
+                    }
 
-                val defaultParams = ShootingParams()
-                val params = ShootingParams(
-                    av = json.optString("av", defaultParams.av),
-                    tv = json.optString("tv", defaultParams.tv),
-                    sv = json.optString("sv", defaultParams.sv),
-                    xv = json.optString("xv", defaultParams.xv),
-                    wbMode = json.optString("wbMode", defaultParams.wbMode),
-                    exposureMode = json.optString("exposureMode", defaultParams.exposureMode),
-                    avList = json.optJSONArray("avList").toStringList(defaultParams.avList),
-                    tvList = json.optJSONArray("tvList").toStringList(defaultParams.tvList),
-                    svList = json.optJSONArray("svList").toStringList(defaultParams.svList),
-                    xvList = json.optJSONArray("xvList").toStringList(defaultParams.xvList),
-                    wbList = json.optJSONArray("wbModeList").toStringList(defaultParams.wbList)
-                )
+                    val defaultParams = ShootingParams()
+                    val params = ShootingParams(
+                        av = json.optString("av", defaultParams.av),
+                        tv = json.optString("tv", defaultParams.tv),
+                        sv = json.optString("sv", defaultParams.sv),
+                        xv = json.optString("xv", defaultParams.xv),
+                        wbMode = json.optString("wbMode", defaultParams.wbMode),
+                        exposureMode = json.optString("exposureMode", defaultParams.exposureMode),
+                        avList = json.optJSONArray("avList").toStringList(defaultParams.avList),
+                        tvList = json.optJSONArray("tvList").toStringList(defaultParams.tvList),
+                        svList = json.optJSONArray("svList").toStringList(defaultParams.svList),
+                        xvList = json.optJSONArray("xvList").toStringList(defaultParams.xvList),
+                        wbList = json.optJSONArray("wbModeList").toStringList(defaultParams.wbList)
+                    )
 
-                val info = CameraInfo(
-                    connected = true,
-                    isMock = false,
-                    model = model,
-                    firmwareVersion = fw,
-                    batteryPercent = battery.coerceIn(0, 100),
-                    storages = storagesList,
-                    ssid = "PENTAX K-1"
-                )
-                info to params
+                    val info = CameraInfo(
+                        connected = true,
+                        isMock = false,
+                        model = model,
+                        firmwareVersion = fw,
+                        batteryPercent = battery.coerceIn(0, 100),
+                        storages = storagesList,
+                        ssid = "PENTAX K-1"
+                    )
+                    info to params
+                }
             }
         }
-    }
 
     suspend fun fetchCameraParams(current: ShootingParams): Result<ShootingParams> = withContext(Dispatchers.IO) {
         runCatching {
@@ -235,9 +238,7 @@ class PentaxK1ApiClient(
         withContext(Dispatchers.IO) {
             runCatching {
                 val form = FormBody.Builder()
-                if (xPercent != null && yPercent != null) {
-                    form.add("pos", "$xPercent,$yPercent")
-                }
+                if (xPercent != null && yPercent != null) form.add("pos", "$xPercent,$yPercent")
                 val req = Request.Builder().url("$baseUrl/v1/lens/focus").post(form.build()).build()
                 buildClient(10).newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) error("对焦指令失败: HTTP ${resp.code}")
