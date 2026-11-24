@@ -298,7 +298,8 @@ class PentaxK1ApiClient(
         withContext(Dispatchers.IO) {
             runCatching {
                 if (xPercent != null && yPercent != null) {
-                    val posVal = "${xPercent.coerceIn(5, 95)},${yPercent.coerceIn(5, 95)}"
+                    // Clamp to K-1 real hardware focusEffectiveArea [70, 64] (X: 15..85, Y: 18..82)
+                    val posVal = "${xPercent.coerceIn(15, 85)},${yPercent.coerceIn(18, 82)}"
                     // CRITICAL: addEncoded keeps the literal comma ',' unencoded (`pos=50,50`)!
                     val form = FormBody.Builder().addEncoded("pos", posVal).build()
                     val req = Request.Builder().url("$baseUrl/v1/lens/focus").post(form).build()
@@ -352,7 +353,7 @@ class PentaxK1ApiClient(
 
             val primary = runCatching {
                 executeLogged("POST", "/v1/camera/shoot (af=$afVal)", 20, 5, req) { _, bodyStr ->
-                    validateShootBody(bodyStr)
+                    validateShootBody(bodyStr, afEnabled)
                 }
             }
             if (primary.isSuccess) return@runCatching
@@ -365,7 +366,7 @@ class PentaxK1ApiClient(
                     .post(FormBody.Builder().build())
                     .build()
                 executeLogged("POST", "/v1/camera/shoot (default-fallback)", 20, 5, emptyReq) { _, bodyStr ->
-                    validateShootBody(bodyStr)
+                    validateShootBody(bodyStr, afEnabled = false)
                 }
                 return@runCatching
             }
@@ -374,14 +375,19 @@ class PentaxK1ApiClient(
         }
     }
 
-    private fun validateShootBody(bodyStr: String) {
+    /**
+     * Pentax K-1 returns `errCode: 200` asynchronously (~28ms) with `captured: false` even when
+     * the mechanical shutter releases normally (true rejections return `errCode: 412/503`, already
+     * caught in executeLogged). Only treat as failure when AF was requested and explicitly failed.
+     */
+    private fun validateShootBody(bodyStr: String, afEnabled: Boolean) {
         val trimmed = bodyStr.trim()
         if (!trimmed.startsWith("{")) return
         val json = try { JSONObject(trimmed) } catch (_: Exception) { return }
-        if (json.has("captured") && !json.optBoolean("captured", true)) {
-            val focused = if (json.has("focused")) json.optBoolean("focused", true) else true
-            val reason = if (!focused) "未合焦 (focused=false)" else "相机未执行拍摄 (captured=false)"
-            error("快门未释放：$reason，请确认机身处于 Live View / 拍摄状态")
+        val focused = if (json.has("focused")) json.optBoolean("focused", true) else true
+        val captured = if (json.has("captured")) json.optBoolean("captured", true) else true
+        if (afEnabled && !focused && !captured) {
+            error("快门未释放：自动对焦未合焦 (focused=false)，请点选高反差边缘后重试")
         }
     }
 
@@ -546,10 +552,13 @@ class PentaxK1ApiClient(
                         return@withContext
                     }
                 } catch (e: Exception) {
+                    if (!currentCoroutineContext().isActive) {
+                        ApiDebugLogger.record("GET", endpoint, 200, 0, "closed cleanly (frames=$decodedFrames)")
+                        return@withContext
+                    }
                     val msg = e.localizedMessage ?: e.javaClass.simpleName
                     lastDiagnostic = "$endpoint $msg (frames=$decodedFrames, bytes=$totalBytesRead)"
                     ApiDebugLogger.record("GET", endpoint, 0, 0, "ex=$lastDiagnostic")
-                    if (!currentCoroutineContext().isActive) return@withContext
                     if (decodedFrames == 0 && epIdx < endpoints.lastIndex) {
                         continue
                     }
