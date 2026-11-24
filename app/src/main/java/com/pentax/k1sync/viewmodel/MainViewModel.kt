@@ -2008,7 +2008,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             _watermarkState.update { it.copy(isLoadingFullscreenHd = true) }
             val hdState = st.copy(config = st.config.copy(highQualityExport = false))
-            val bmp = renderFullPipeline(hdState, isExport = true, exportMaxEdgeOverride = 2800)
+            val bmp = renderFullPipeline(hdState, isExport = true, exportMaxEdgeOverride = 2800)?.first
             _watermarkState.update {
                 it.copy(
                     fullscreenHighResBitmap = bmp ?: it.fullscreenHighResBitmap,
