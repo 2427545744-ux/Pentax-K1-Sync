@@ -1,6 +1,7 @@
 package com.pentax.k1sync.network
 
 import android.graphics.Bitmap
+import android.os.Process
 import android.graphics.BitmapFactory
 import com.pentax.k1sync.model.CameraInfo
 import com.pentax.k1sync.model.CameraPhoto
@@ -28,6 +29,7 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.net.URI
@@ -43,6 +45,18 @@ class PentaxK1ApiClient(
 
     @Volatile
     private var activeLiveViewSocket: Socket? = null
+
+    private val transferSockLock = Any()
+    private var reusableTransferSocket: Socket? = null
+    private var reusableTransferIn: BufferedInputStream? = null
+
+    fun closeTransferKeepAliveSocket() {
+        synchronized(transferSockLock) {
+            try { reusableTransferSocket?.close() } catch (_: Exception) {}
+            reusableTransferSocket = null
+            reusableTransferIn = null
+        }
+    }
 
     /**
      * Immediately closes any blocking Live View TCP socket so K-1 releases its single stream channel
@@ -308,145 +322,287 @@ class PentaxK1ApiClient(
     suspend fun downloadPhotoBytes(
         photo: CameraPhoto,
         size: String,
+        useOkHttpCompat: Boolean = false,
         onProgress: ((Long, Long) -> Unit)? = null
     ): Result<ByteArray> = withContext(Dispatchers.IO) {
         runCatching {
             val path = "/v1/photos/${photo.dir}/${photo.file}?size=$size&storage=${photo.slot.apiName}"
-            if (size != "thumb") {
-                return@runCatching downloadPhotoFastRawTcp(path, isFull = (size == "full"), onProgress = onProgress)
+            if (size == "thumb") {
+                val req = Request.Builder()
+                    .url("$baseUrl$path")
+                    .header("Accept-Encoding", "identity")
+                    .get()
+                    .build()
+                return@runCatching buildClient(20L).newCall(req).execute().use { resp ->
+                    if (!resp.isSuccessful) error("下载缩略图失败: HTTP ${resp.code}")
+                    val body = resp.body ?: error("响应内容为空")
+                    body.bytes()
+                }
             }
-            val req = Request.Builder()
-                .url("$baseUrl$path")
-                .header("Accept-Encoding", "identity")
-                .get()
-                .build()
-            buildClient(20L).newCall(req).execute().use { resp ->
-                if (!resp.isSuccessful) error("下载缩略图失败: HTTP ${resp.code}")
-                val body = resp.body ?: error("响应内容为空")
-                body.bytes()
-            }
+            val out = ByteArrayOutputStream(if (size == "full") 4 * 1024 * 1024 else 512 * 1024)
+            downloadPathToStreamInternal(
+                path = path,
+                isFull = (size == "full"),
+                output = out,
+                useOkHttpCompat = useOkHttpCompat,
+                onProgress = onProgress
+            )
+            out.toByteArray()
         }
     }
 
     /**
-     * Direct high-throughput raw TCP downloader tailored for Pentax K-1's embedded 2.4GHz Wi-Fi stack:
-     * - Large 512 KB kernel TCP receive buffer (`SO_RCVBUF`) + `TCP_NODELAY = true` for immediate ACKs.
-     * - Explicit `Accept-Encoding: identity` & `Connection: close` (zero OkHttp pool/gzip overhead).
-     * - Pre-allocated exact ByteArray when Content-Length is known (zero ByteArrayOutputStream reallocation copies!).
+     * Zero-heap streaming downloader: writes directly from K-1 socket to caller's OutputStream
+     * using a 64 KB buffer (zero 45MB ByteArray heap allocation, zero ART GC stalls mid-transfer!).
      */
-    private fun downloadPhotoFastRawTcp(
+    suspend fun downloadPhotoToStream(
+        photo: CameraPhoto,
+        size: String,
+        output: OutputStream,
+        useOkHttpCompat: Boolean = false,
+        onProgress: ((Long, Long) -> Unit)? = null
+    ): Result<Long> = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = "/v1/photos/${photo.dir}/${photo.file}?size=$size&storage=${photo.slot.apiName}"
+            downloadPathToStreamInternal(
+                path = path,
+                isFull = (size == "full"),
+                output = output,
+                useOkHttpCompat = useOkHttpCompat,
+                onProgress = onProgress
+            )
+        }
+    }
+
+    private fun downloadPathToStreamInternal(
         path: String,
         isFull: Boolean,
+        output: OutputStream,
+        useOkHttpCompat: Boolean,
         onProgress: ((Long, Long) -> Unit)?
-    ): ByteArray {
+    ): Long {
+        val prevPrio = try { Process.getThreadPriority(Process.myTid()) } catch (_: Exception) { Process.THREAD_PRIORITY_BACKGROUND }
+        try {
+            try { Process.setThreadPriority(Process.THREAD_PRIORITY_DISPLAY) } catch (_: Exception) {}
+            return if (useOkHttpCompat) {
+                downloadStreamViaOkHttp(path, isFull, output, onProgress)
+            } else {
+                downloadStreamViaFastRawTcp(path, isFull, output, onProgress)
+            }
+        } finally {
+            try { Process.setThreadPriority(prevPrio) } catch (_: Exception) {}
+        }
+    }
+
+    private fun downloadStreamViaOkHttp(
+        path: String,
+        isFull: Boolean,
+        output: OutputStream,
+        onProgress: ((Long, Long) -> Unit)?
+    ): Long {
+        val t0 = System.currentTimeMillis()
+        val timeout = if (isFull) 120L else 25L
+        val req = Request.Builder()
+            .url("$baseUrl$path")
+            .header("Accept-Encoding", "identity")
+            .get()
+            .build()
+        buildClient(timeout).newCall(req).execute().use { resp ->
+            if (!resp.isSuccessful) {
+                ApiDebugLogger.record("GET", path, resp.code, System.currentTimeMillis() - t0, "okhttp-stream HTTP ${resp.code}")
+                error("下载失败: HTTP ${resp.code}")
+            }
+            val body = resp.body ?: error("响应内容为空")
+            val total = body.contentLength()
+            val input = body.byteStream()
+            val buf = ByteArray(64 * 1024)
+            var readTotal = 0L
+            var lastProgressMs = 0L
+            var count: Int
+            while (input.read(buf).also { count = it } != -1) {
+                output.write(buf, 0, count)
+                readTotal += count
+                if (onProgress != null) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastProgressMs >= 150L || (total > 0L && readTotal >= total)) {
+                        lastProgressMs = now
+                        onProgress.invoke(readTotal, total)
+                    }
+                }
+            }
+            if (total > 0L && readTotal < total) {
+                error("下载未完整 ($readTotal / $total B)")
+            }
+            onProgress?.invoke(readTotal, if (total > 0L) total else readTotal)
+            val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+            val mbps = (readTotal / (1024.0 * 1024.0)) / (elapsed / 1000.0)
+            ApiDebugLogger.record("GET", path, resp.code, elapsed, "okHttpStream ${readTotal}B (${"%.2f".format(mbps)} MB/s)")
+            return readTotal
+        }
+    }
+
+    /**
+     * Mobile-tuned Zero-Heap Raw TCP Streaming Downloader for Pentax K-1:
+     * - Standard 64 KB non-scaled TCP receive window (avoids 2016 embedded RTOS Window Scaling bugs!).
+     * - Persistent HTTP/1.1 Keep-Alive socket reuse across consecutive batch photos with transparent fallback.
+     * - Streams directly into `output` via a 64 KB buffer (zero 45MB Java heap arrays, zero GC freezes).
+     */
+    private fun downloadStreamViaFastRawTcp(
+        path: String,
+        isFull: Boolean,
+        output: OutputStream,
+        onProgress: ((Long, Long) -> Unit)?
+    ): Long {
         val uri = try { URI(baseUrl) } catch (_: Exception) { URI("http://192.168.0.1") }
         val host = uri.host ?: "192.168.0.1"
         val port = if (uri.port > 0) uri.port else 80
         val t0 = System.currentTimeMillis()
-        val socket = wifiBinder.getSocketFactory().createSocket()
-        try {
-            try { socket.receiveBufferSize = 512 * 1024 } catch (_: Exception) {}
-            try { socket.tcpNoDelay = true } catch (_: Exception) {}
-            socket.soTimeout = if (isFull) 45_000 else 20_000
-            socket.connect(InetSocketAddress(host, port), 5_000)
 
-            val reqStr = buildString {
-                append("GET ").append(path).append(" HTTP/1.1\r\n")
-                append("Host: ").append(host).append("\r\n")
-                append("Accept: */*\r\n")
-                append("Accept-Encoding: identity\r\n")
-                append("Connection: close\r\n")
-                append("\r\n")
-            }
-            socket.getOutputStream().apply {
-                write(reqStr.toByteArray(Charsets.US_ASCII))
-                flush()
-            }
-
-            val rawIn = BufferedInputStream(socket.getInputStream(), 128 * 1024)
-            val statusLine = readAsciiLine(rawIn) ?: error("K-1 未返回响应头（空响应）")
-            val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
-            val headers = LinkedHashMap<String, String>()
-            while (true) {
-                val line = readAsciiLine(rawIn) ?: break
-                if (line.isEmpty()) break
-                val colon = line.indexOf(':')
-                if (colon > 0) {
-                    headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
-                        line.substring(colon + 1).trim()
-                }
-            }
-            if (statusCode !in 200..299) {
-                ApiDebugLogger.record("GET", path, statusCode, System.currentTimeMillis() - t0, "fast-tcp HTTP $statusCode")
-                error("下载失败: HTTP $statusCode")
-            }
-
-            val contentLength = headers["content-length"]?.toLongOrNull() ?: -1L
-            val isChunked = headers["transfer-encoding"].orEmpty().contains("chunked", ignoreCase = true)
-            val bodyIn: InputStream = if (isChunked) ChunkedHttpInputStream(rawIn) else rawIn
-
-            val resultBytes: ByteArray
-            var readTotal = 0L
-            var lastProgressMs = 0L
-
-            if (!isChunked && contentLength in 1L..95_000_000L) {
-                // Zero-copy exact ByteArray allocation!
-                val exact = ByteArray(contentLength.toInt())
-                var offset = 0
-                val chunkSize = 128 * 1024
-                while (offset < exact.size) {
-                    val toRead = minOf(chunkSize, exact.size - offset)
-                    val n = bodyIn.read(exact, offset, toRead)
-                    if (n <= 0) break
-                    offset += n
-                    readTotal = offset.toLong()
-                    if (onProgress != null) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastProgressMs >= 150L || readTotal >= contentLength) {
-                            lastProgressMs = now
-                            onProgress.invoke(readTotal, contentLength)
-                        }
+        for (sockAttempt in 0..1) {
+            var socket: Socket? = null
+            var rawIn: BufferedInputStream? = null
+            var wasReused = false
+            var keepAliveOk = false
+            try {
+                synchronized(transferSockLock) {
+                    val existing = reusableTransferSocket
+                    val existingIn = reusableTransferIn
+                    if (sockAttempt == 0 && existing != null && existingIn != null && !existing.isClosed && existing.isConnected) {
+                        socket = existing
+                        rawIn = existingIn
+                        reusableTransferSocket = null
+                        reusableTransferIn = null
+                        wasReused = true
                     }
                 }
-                if (offset < exact.size) {
-                    error("下载未完整 ($offset / ${exact.size} B)")
+                if (socket == null) {
+                    val fresh = wifiBinder.getSocketFactory().createSocket()
+                    try { fresh.receiveBufferSize = 64 * 1024 } catch (_: Exception) {}
+                    try { fresh.tcpNoDelay = true } catch (_: Exception) {}
+                    fresh.soTimeout = if (isFull) 45_000 else 20_000
+                    fresh.connect(InetSocketAddress(host, port), 5_000)
+                    socket = fresh
+                    rawIn = BufferedInputStream(fresh.getInputStream(), 64 * 1024)
+                } else {
+                    socket!!.soTimeout = if (isFull) 45_000 else 20_000
                 }
-                resultBytes = exact
-            } else {
-                val out = ByteArrayOutputStream(if (isFull) 8 * 1024 * 1024 else 512 * 1024)
-                val buf = ByteArray(128 * 1024)
-                var count: Int
-                while (bodyIn.read(buf).also { count = it } != -1) {
-                    out.write(buf, 0, count)
-                    readTotal += count
-                    if (onProgress != null) {
-                        val now = System.currentTimeMillis()
-                        if (now - lastProgressMs >= 150L) {
-                            lastProgressMs = now
-                            onProgress.invoke(readTotal, contentLength)
-                        }
+
+                val activeSock = socket!!
+                val activeIn = rawIn!!
+
+                val reqStr = buildString {
+                    append("GET ").append(path).append(" HTTP/1.1\r\n")
+                    append("Host: ").append(host).append("\r\n")
+                    append("Accept: */*\r\n")
+                    append("Accept-Encoding: identity\r\n")
+                    append("Connection: keep-alive\r\n")
+                    append("\r\n")
+                }
+                activeSock.getOutputStream().apply {
+                    write(reqStr.toByteArray(Charsets.US_ASCII))
+                    flush()
+                }
+
+                val statusLine = readAsciiLine(activeIn)
+                if (statusLine == null) {
+                    if (wasReused && sockAttempt == 0) {
+                        try { activeSock.close() } catch (_: Exception) {}
+                        continue
+                    }
+                    error("K-1 未返回响应头（空响应）")
+                }
+
+                val statusCode = statusLine.split(" ").getOrNull(1)?.toIntOrNull() ?: 0
+                val headers = LinkedHashMap<String, String>()
+                while (true) {
+                    val line = readAsciiLine(activeIn) ?: break
+                    if (line.isEmpty()) break
+                    val colon = line.indexOf(':')
+                    if (colon > 0) {
+                        headers[line.substring(0, colon).trim().lowercase(Locale.US)] =
+                            line.substring(colon + 1).trim()
                     }
                 }
-                resultBytes = out.toByteArray()
-            }
+                if (statusCode !in 200..299) {
+                    ApiDebugLogger.record("GET", path, statusCode, System.currentTimeMillis() - t0, "fast-tcp HTTP $statusCode")
+                    error("下载失败: HTTP $statusCode")
+                }
 
-            onProgress?.invoke(readTotal, if (contentLength > 0L) contentLength else readTotal)
-            val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
-            val mbps = (readTotal / (1024.0 * 1024.0)) / (elapsed / 1000.0)
-            ApiDebugLogger.record("GET", path, statusCode, elapsed, "fastTCP ${readTotal}B (${"%.2f".format(mbps)} MB/s)")
-            return resultBytes
-        } finally {
-            try { socket.close() } catch (_: Exception) {}
+                val contentLength = headers["content-length"]?.toLongOrNull() ?: -1L
+                val isChunked = headers["transfer-encoding"].orEmpty().contains("chunked", ignoreCase = true)
+                val serverClosing = headers["connection"].orEmpty().contains("close", ignoreCase = true)
+                val buf = ByteArray(64 * 1024)
+                var readTotal = 0L
+                var lastProgressMs = 0L
+
+                if (!isChunked && contentLength > 0L) {
+                    var remaining = contentLength
+                    while (remaining > 0L) {
+                        val toRead = minOf(buf.size.toLong(), remaining).toInt()
+                        val n = activeIn.read(buf, 0, toRead)
+                        if (n <= 0) break
+                        output.write(buf, 0, n)
+                        remaining -= n
+                        readTotal += n
+                        if (onProgress != null) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgressMs >= 150L || remaining == 0L) {
+                                lastProgressMs = now
+                                onProgress.invoke(readTotal, contentLength)
+                            }
+                        }
+                    }
+                    if (remaining > 0L) {
+                        error("下载未完整 ($readTotal / $contentLength B)")
+                    }
+                    keepAliveOk = !serverClosing
+                } else {
+                    val bodyIn: InputStream = if (isChunked) ChunkedHttpInputStream(activeIn) else activeIn
+                    var count: Int
+                    while (bodyIn.read(buf).also { count = it } != -1) {
+                        output.write(buf, 0, count)
+                        readTotal += count
+                        if (onProgress != null) {
+                            val now = System.currentTimeMillis()
+                            if (now - lastProgressMs >= 150L) {
+                                lastProgressMs = now
+                                onProgress.invoke(readTotal, contentLength)
+                            }
+                        }
+                    }
+                    keepAliveOk = isChunked && !serverClosing
+                }
+
+                onProgress?.invoke(readTotal, if (contentLength > 0L) contentLength else readTotal)
+                val elapsed = (System.currentTimeMillis() - t0).coerceAtLeast(1L)
+                val mbps = (readTotal / (1024.0 * 1024.0)) / (elapsed / 1000.0)
+                val tag = if (wasReused) "fastTCP-KA" else "fastTCP"
+                ApiDebugLogger.record("GET", path, statusCode, elapsed, "$tag ${readTotal}B (${"%.2f".format(mbps)} MB/s)")
+
+                if (keepAliveOk) {
+                    synchronized(transferSockLock) {
+                        if (reusableTransferSocket == null) {
+                            reusableTransferSocket = activeSock
+                            reusableTransferIn = activeIn
+                        } else {
+                            try { activeSock.close() } catch (_: Exception) {}
+                        }
+                    }
+                } else {
+                    try { activeSock.close() } catch (_: Exception) {}
+                }
+                return readTotal
+            } catch (e: Exception) {
+                try { socket?.close() } catch (_: Exception) {}
+                if (wasReused && sockAttempt == 0) {
+                    continue
+                }
+                throw e
+            }
         }
+        error("下载连接异常")
     }
 
-    /**
-     * Triggers Live View AF on Pentax K-1.
-     * - Uses addEncoded("pos", "X,Y") so the wire payload is literal `pos=50,50` (NOT `pos=50%2C50`,
-     *   which Pentax K-1's embedded C parser rejects!).
-     * - Checks JSON `errCode` and `focused` honestly instead of treating every HTTP 200 as success.
-     * - Returns Result<Boolean>: true = coordinate pos=X,Y accepted & focused, false = center-point fallback focused.
-     */
     suspend fun triggerAutoFocus(xPercent: Int? = null, yPercent: Int? = null): Result<Boolean> =
         withContext(Dispatchers.IO) {
             runCatching {
@@ -676,7 +832,8 @@ class PentaxK1ApiClient(
                             readNextCompleteJpeg(bufferedBody) { n -> totalBytesRead += n }
                         } ?: break
 
-                        val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size)
+                        val decOpts = if (preferRgb565()) BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 } else null
+                        val bmp = BitmapFactory.decodeByteArray(jpegBytes, 0, jpegBytes.size, decOpts)
                         if (bmp != null) {
                             decodedFrames++
                             if (decodedFrames == 1) {

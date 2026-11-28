@@ -23,6 +23,9 @@ class AppPreferencesStore(context: Context) {
     fun loadExclusiveWifiTransfer(): Boolean = prefs.getBoolean("exclusive_wifi_transfer", true)
     fun saveExclusiveWifiTransfer(enabled: Boolean) { prefs.edit().putBoolean("exclusive_wifi_transfer", enabled).apply() }
 
+    fun loadUseOkHttpCompatDownload(): Boolean = prefs.getBoolean("use_okhttp_compat_download", false)
+    fun saveUseOkHttpCompatDownload(enabled: Boolean) { prefs.edit().putBoolean("use_okhttp_compat_download", enabled).apply() }
+
     fun loadVolumeShutterEnabled(): Boolean = prefs.getBoolean("volume_shutter_enabled", true)
     fun saveVolumeShutterEnabled(enabled: Boolean) { prefs.edit().putBoolean("volume_shutter_enabled", enabled).apply() }
 

@@ -20,6 +20,7 @@ import com.pentax.k1sync.image.ColorBalanceZone
 import com.pentax.k1sync.image.PostToneConfig
 import com.pentax.k1sync.image.PsGradePreset
 import com.pentax.k1sync.model.CameraInfo
+import com.pentax.k1sync.network.WifiLinkTelemetry
 import com.pentax.k1sync.model.CameraPhoto
 import com.pentax.k1sync.model.DownloadQuality
 import com.pentax.k1sync.model.FocusPeakingColor
@@ -200,6 +201,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val wifiStatus: StateFlow<String> = repo.wifiBinder.statusMessage
     val cellularInternetAlive: StateFlow<Boolean> = repo.wifiBinder.cellularInternetAlive
+    val wifiLinkTelemetry: StateFlow<WifiLinkTelemetry?> = repo.wifiBinder.linkTelemetry
 
     private val _cameraWifiPassword = MutableStateFlow(repo.prefsStore.loadCameraWifiPassword())
     val cameraWifiPassword: StateFlow<String> = _cameraWifiPassword.asStateFlow()
@@ -291,6 +293,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _exclusiveWifiTransfer = MutableStateFlow(repo.prefsStore.loadExclusiveWifiTransfer())
     val exclusiveWifiTransfer: StateFlow<Boolean> = _exclusiveWifiTransfer.asStateFlow()
+
+    private val _useOkHttpCompatDownload = MutableStateFlow(repo.prefsStore.loadUseOkHttpCompatDownload())
+    val useOkHttpCompatDownload: StateFlow<Boolean> = _useOkHttpCompatDownload.asStateFlow()
 
     private val _cacheSizeMb = MutableStateFlow(0f)
     val cacheSizeMbState: StateFlow<Float> = _cacheSizeMb.asStateFlow()
@@ -479,6 +484,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             triggerSilentPhotoSync()
         } else if (tab == AppTab.SYNC) {
             viewModelScope.launch(Dispatchers.IO) { refreshCacheSize() }
+            repo.wifiBinder.refreshLinkTelemetry()
         }
     }
 
@@ -974,7 +980,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (k != id) next[k] = v
             }
             next[id] = bmp
-            while (next.size > 180) {
+            while (next.size > 320) {
                 val oldestKey = next.keys.firstOrNull() ?: break
                 next.remove(oldestKey)
             }
@@ -1008,7 +1014,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 // During active high-speed photo transfers, only serve from instant local disk/RAM cache
                 // so thumbnail HTTP GETs never compete with K-1's single-core Wi-Fi & SD card bus!
                 if (_hasActiveTransfer.value) {
-                    val cached = repo.thumbCache.get(id)
+                    val cached = repo.getCachedThumbnail(photo)
                     if (cached != null) putThumbnailLru(id, cached)
                     return@launch
                 }
@@ -1345,27 +1351,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 return@launch
             }
 
+            val cacheFile = withContext(Dispatchers.IO) {
+                val dir = File(getApplication<Application>().cacheDir, "raw_studio").apply { mkdirs() }
+                dir.listFiles()?.forEach { it.delete() }
+                File(dir, rawPhoto.file)
+            }
             enterExclusiveTransferMode()
-            val bytesRes = try {
+            val streamRes = try {
                 val tRaw0 = System.currentTimeMillis()
-                repo.downloadPhotoBytes(rawPhoto, DownloadQuality.RAW) { read, total ->
-                    val pct = if (total > 0) ((read * 100) / total).toInt() else 0
-                    val sec = ((System.currentTimeMillis() - tRaw0).coerceAtLeast(100L)) / 1000.0
-                    val mbps = (read / (1024.0 * 1024.0)) / sec
-                    _watermarkState.update { it.copy(spektraStatusText = "极速拉取 RAW ${rawPhoto.file} $pct% (${"%.1f".format(mbps)} MB/s)...") }
+                val compat = _useOkHttpCompatDownload.value
+                withContext(Dispatchers.IO) {
+                    FileOutputStream(cacheFile).use { fos ->
+                        repo.downloadPhotoToStream(rawPhoto, DownloadQuality.RAW, fos, useOkHttpCompat = compat) { read, total ->
+                            val pct = if (total > 0) ((read * 100) / total).toInt() else 0
+                            val sec = ((System.currentTimeMillis() - tRaw0).coerceAtLeast(100L)) / 1000.0
+                            val mbps = (read / (1024.0 * 1024.0)) / sec
+                            _watermarkState.update { it.copy(spektraStatusText = "流式拉取 RAW ${rawPhoto.file} $pct% (${"%.1f".format(mbps)} MB/s)...") }
+                        }
+                    }
                 }
             } finally {
                 exitExclusiveTransferMode()
             }
-            bytesRes.onSuccess { bytes ->
-                val cacheFile = withContext(Dispatchers.IO) {
-                    val dir = File(getApplication<Application>().cacheDir, "raw_studio").apply { mkdirs() }
-                    dir.listFiles()?.forEach { it.delete() }
-                    File(dir, rawPhoto.file).apply { writeBytes(bytes) }
+            streamRes.onSuccess {
+                // Read only first 256 KB header for EXIF (zero 45MB ByteArray allocation!)
+                val parsedExif = withContext(Dispatchers.IO) {
+                    val head = cacheFile.inputStream().use { ins ->
+                        val buf = ByteArray(262_144)
+                        val n = ins.read(buf)
+                        if (n > 0) buf.copyOf(n) else ByteArray(0)
+                    }
+                    mergeExif(PentaxExifReader.parse(head), exif)
                 }
-                val parsedExif = withContext(Dispatchers.IO) { mergeExif(PentaxExifReader.parse(bytes), exif) }
                 openRawFileIntoStudio(cacheFile, rawPhoto.file, parsedExif, sourceCamPhoto = photo)
             }.onFailure { err ->
+                try { cacheFile.delete() } catch (_: Exception) {}
                 _watermarkState.update { it.copy(isRendering = false) }
                 showToast("拉取 K-1 RAW 失败: ${err.localizedMessage}")
             }
@@ -1377,6 +1397,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // ---------------------------------------------------------
     fun setDefaultQuality(quality: DownloadQuality) { _defaultQuality.value = quality }
     fun setAutoWatermarkOnTransfer(enabled: Boolean) { _autoWatermarkOnTransfer.value = enabled }
+
+    fun setUseOkHttpCompatDownload(enabled: Boolean) {
+        _useOkHttpCompatDownload.value = enabled
+        repo.prefsStore.saveUseOkHttpCompatDownload(enabled)
+        repo.apiClient.closeTransferKeepAliveSocket()
+        showToast(if (enabled) "已切换为系统 OkHttp 流式兼容模式（可用于对比实测网速）" else "已切换为裸 TCP 零堆流式复用模式（推荐）")
+    }
 
     fun setExclusiveWifiTransfer(enabled: Boolean) {
         _exclusiveWifiTransfer.value = enabled
@@ -1480,6 +1507,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun exitExclusiveTransferMode() {
         _hasActiveTransfer.value = false
+        repo.apiClient.closeTransferKeepAliveSocket()
         repo.wifiBinder.releaseTransferBoost()
         if (_cameraInfo.value.connected && !_isMockMode.value) {
             attachChangesWebSocket()
@@ -1493,112 +1521,166 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val pendingSaves = mutableListOf<Job>()
             enterExclusiveTransferMode()
             try {
-            while (isActive) {
-                val next = _transferTasks.value.lastOrNull { it.status == TransferStatus.QUEUED } ?: break
-                updateTask(next.id) { it.copy(status = TransferStatus.DOWNLOADING, progress = 0f, speedBytesPerSec = 0L, retryAttempt = 0) }
-                val remaining = _transferTasks.value.count {
-                    it.status == TransferStatus.QUEUED || it.status == TransferStatus.DOWNLOADING
-                }
-                TransferForegroundService.updateProgress(
-                    ctx, "K-1 传图中 (剩余 $remaining 张)", "${next.photo.file} · ${next.quality.label}", 0, 100
-                )
-
-                var attempt = 0
-                val maxRetries = 2
-                var finalRes: Result<ByteArray>? = null
-
-                while (isActive && attempt <= maxRetries) {
-                    if (attempt > 0) {
-                        updateTask(next.id) { it.copy(retryAttempt = attempt, errorMessage = "连接波动，自动重试 ($attempt/$maxRetries)...") }
-                        delay(1500)
+                while (isActive) {
+                    val next = _transferTasks.value.lastOrNull { it.status == TransferStatus.QUEUED } ?: break
+                    updateTask(next.id) { it.copy(status = TransferStatus.DOWNLOADING, progress = 0f, speedBytesPerSec = 0L, retryAttempt = 0) }
+                    val remaining = _transferTasks.value.count {
+                        it.status == TransferStatus.QUEUED || it.status == TransferStatus.DOWNLOADING
                     }
-                    val startMs = System.currentTimeMillis()
-                    var lastReportMs = startMs
-                    val res = repo.downloadPhotoBytes(next.photo, next.quality) { read, total ->
-                        val now = System.currentTimeMillis()
-                        val elapsedSec = ((now - startMs).coerceAtLeast(100L)) / 1000.0
-                        val speed = (read / elapsedSec).toLong()
-                        val frac = if (total > 0) (read.toFloat() / total).coerceIn(0f, 1f) else 0.5f
-                        updateTask(next.id) {
-                            it.copy(progress = frac, bytesRead = read, totalBytes = total, speedBytesPerSec = speed)
+                    TransferForegroundService.updateProgress(
+                        ctx, "K-1 传图中 (剩余 $remaining 张)", "${next.photo.file} · ${next.quality.label}", 0, 100
+                    )
+
+                    val isRawFile = next.photo.isRaw && next.quality == DownloadQuality.RAW
+                    val outName = if (next.quality == DownloadQuality.VIEW && next.photo.isRaw) {
+                        next.photo.baseName + "_preview.jpg"
+                    } else next.photo.file
+                    val needsInMemoryWatermark = next.autoWatermark && !isRawFile
+                    val compatMode = _useOkHttpCompatDownload.value
+
+                    var attempt = 0
+                    val maxRetries = 2
+
+                    if (!needsInMemoryWatermark) {
+                        // ZERO-HEAP DIRECT STREAMING PATH: Socket -> 64KB buffer -> MediaStore (0MB RAM spike, 0 GC pause!)
+                        var savedPathRes: Result<String>? = null
+                        while (isActive && attempt <= maxRetries) {
+                            if (attempt > 0) {
+                                updateTask(next.id) { it.copy(retryAttempt = attempt, errorMessage = "连接波动，自动重试 ($attempt/$maxRetries)...") }
+                                delay(1200)
+                            }
+                            val startMs = System.currentTimeMillis()
+                            var lastReportMs = startMs
+                            val res = MediaStoreSaver.saveStreamDirectly(
+                                context = ctx,
+                                fileName = outName,
+                                isRaw = isRawFile
+                            ) { outStream ->
+                                repo.downloadPhotoToStream(next.photo, next.quality, outStream, useOkHttpCompat = compatMode) { read, total ->
+                                    val now = System.currentTimeMillis()
+                                    val elapsedSec = ((now - startMs).coerceAtLeast(100L)) / 1000.0
+                                    val speed = (read / elapsedSec).toLong()
+                                    val frac = if (total > 0) (read.toFloat() / total).coerceIn(0f, 1f) else 0.5f
+                                    updateTask(next.id) {
+                                        it.copy(progress = frac, bytesRead = read, totalBytes = total, speedBytesPerSec = speed)
+                                    }
+                                    if (now - lastReportMs >= 400L || frac >= 0.99f) {
+                                        lastReportMs = now
+                                        val mbps = speed / (1024.0 * 1024.0)
+                                        val rateLabel = if (mbps >= 0.1) "${"%.1f".format(mbps)} MB/s" else "${speed / 1024} KB/s"
+                                        TransferForegroundService.updateProgress(
+                                            ctx, "K-1 传图中 (剩余 $remaining 张)", "${next.photo.file} ${(frac * 100).toInt()}% · $rateLabel", (frac * 100).toInt(), 100
+                                        )
+                                    }
+                                }.getOrThrow()
+                            }
+                            savedPathRes = res
+                            if (res.isSuccess) break
+                            attempt++
                         }
-                        if (now - lastReportMs >= 400L || frac >= 0.99f) {
-                            lastReportMs = now
-                            val mbps = speed / (1024.0 * 1024.0)
-                            val rateLabel = if (mbps >= 0.1) "${"%.1f".format(mbps)} MB/s" else "${speed / 1024} KB/s"
-                            TransferForegroundService.updateProgress(
-                                ctx, "K-1 传图中 (剩余 $remaining 张)", "${next.photo.file} ${(frac * 100).toInt()}% · $rateLabel", (frac * 100).toInt(), 100
-                            )
-                        }
-                    }
-                    finalRes = res
-                    if (res.isSuccess) break
-                    attempt++
-                }
 
-                (finalRes ?: Result.failure(IllegalStateException("传输已取消"))).onSuccess { bytes ->
-                    // Pipeline disk save & optional watermark asynchronously so Wi-Fi starts the NEXT photo immediately!
-                    pendingSaves.removeAll { it.isCompleted }
-                    val taskSnap = next
-                    val saveJob = viewModelScope.launch(Dispatchers.IO) {
-                        savePipelineSemaphore.withPermit {
-                            val isRawFile = taskSnap.photo.isRaw && taskSnap.quality == DownloadQuality.RAW
-                            val outName = if (taskSnap.quality == DownloadQuality.VIEW && taskSnap.photo.isRaw) {
-                                taskSnap.photo.baseName + "_preview.jpg"
-                            } else taskSnap.photo.file
-
-                            val saveResult = MediaStoreSaver.saveImageBytes(ctx, bytes, outName, isRaw = isRawFile)
-
-                            if (taskSnap.autoWatermark && !isRawFile) {
-                                val bmp = BitmapOrientationUtil.decodeOrientedBitmap(bytes)
-                                if (bmp != null) {
-                                    val fileExif = PentaxExifReader.parse(bytes)
-                                    val cachedExif = _photoExifMap.value[taskSnap.photo.uniqueId]
-                                    val mergedExif = enrichExifWithManualLens(mergeExif(fileExif, cachedExif))
-                                    val studioState = _watermarkState.value
-                                    val cfg = WatermarkConfig.fromExif(mergedExif, studioState.config)
-                                    val graded = CubeLutEngine.applyLut(bmp, studioState.activeLutPreset, studioState.lutIntensity)
-                                    val toned = PostDarkroomAdjuster.apply(graded, studioState.postTone, cfg.showVintageDateImprint, cfg.dateTime)
-                                    val marked = if (cfg.watermarkEnabled) PentaxWatermarkRenderer.render(toned, cfg) else toned
-                                    MediaStoreSaver.saveBitmapAsJpeg(
-                                        ctx, marked, outName.substringBeforeLast('.') + "_pentax_wm.jpg",
-                                        exifToEmbed = mergedExif,
-                                        artist = cfg.signature,
-                                        copyright = cfg.copyrightNotice
-                                    )
-                                    if (marked !== toned) marked.recycle()
-                                    if (toned !== graded) toned.recycle()
-                                    if (graded !== bmp) graded.recycle()
-                                    bmp.recycle()
+                        (savedPathRes ?: Result.failure(IllegalStateException("传输已取消"))).onSuccess { savedPath ->
+                            repo.historyStore.markDownloaded(next.photo.uniqueId)
+                            _rawPhotos.update { list ->
+                                list.map { p -> if (p.uniqueId == next.photo.uniqueId) p.copy(isDownloaded = true) else p }
+                            }
+                            _detailPhotos.update { list ->
+                                list.map { p ->
+                                    if (p.uniqueId == next.photo.uniqueId || p.companionRaw?.uniqueId == next.photo.uniqueId) {
+                                        p.copy(isDownloaded = true)
+                                    } else p
                                 }
                             }
-
-                            saveResult.onSuccess { savedPath ->
-                                repo.historyStore.markDownloaded(taskSnap.photo.uniqueId)
-                                _rawPhotos.update { list ->
-                                    list.map { p -> if (p.uniqueId == taskSnap.photo.uniqueId) p.copy(isDownloaded = true) else p }
+                            recomputeDisplayPhotos()
+                            updateTask(next.id) { it.copy(status = TransferStatus.COMPLETED, progress = 1f, savedPath = savedPath, errorMessage = null) }
+                        }.onFailure { err ->
+                            updateTask(next.id) { it.copy(status = TransferStatus.FAILED, errorMessage = "重试失败: ${err.localizedMessage}") }
+                        }
+                    } else {
+                        // Async Watermark Pipeline for JPG when autoWatermark is ON
+                        var finalRes: Result<ByteArray>? = null
+                        while (isActive && attempt <= maxRetries) {
+                            if (attempt > 0) {
+                                updateTask(next.id) { it.copy(retryAttempt = attempt, errorMessage = "连接波动，自动重试 ($attempt/$maxRetries)...") }
+                                delay(1200)
+                            }
+                            val startMs = System.currentTimeMillis()
+                            var lastReportMs = startMs
+                            val res = repo.downloadPhotoBytes(next.photo, next.quality, useOkHttpCompat = compatMode) { read, total ->
+                                val now = System.currentTimeMillis()
+                                val elapsedSec = ((now - startMs).coerceAtLeast(100L)) / 1000.0
+                                val speed = (read / elapsedSec).toLong()
+                                val frac = if (total > 0) (read.toFloat() / total).coerceIn(0f, 1f) else 0.5f
+                                updateTask(next.id) {
+                                    it.copy(progress = frac, bytesRead = read, totalBytes = total, speedBytesPerSec = speed)
                                 }
-                                _detailPhotos.update { list ->
-                                    list.map { p ->
-                                        if (p.uniqueId == taskSnap.photo.uniqueId || p.companionRaw?.uniqueId == taskSnap.photo.uniqueId) {
-                                            p.copy(isDownloaded = true)
-                                        } else p
+                                if (now - lastReportMs >= 400L || frac >= 0.99f) {
+                                    lastReportMs = now
+                                    val mbps = speed / (1024.0 * 1024.0)
+                                    val rateLabel = if (mbps >= 0.1) "${"%.1f".format(mbps)} MB/s" else "${speed / 1024} KB/s"
+                                    TransferForegroundService.updateProgress(
+                                        ctx, "K-1 传图中 (剩余 $remaining 张)", "${next.photo.file} ${(frac * 100).toInt()}% · $rateLabel", (frac * 100).toInt(), 100
+                                    )
+                                }
+                            }
+                            finalRes = res
+                            if (res.isSuccess) break
+                            attempt++
+                        }
+
+                        (finalRes ?: Result.failure(IllegalStateException("传输已取消"))).onSuccess { bytes ->
+                            pendingSaves.removeAll { it.isCompleted }
+                            val taskSnap = next
+                            val saveJob = viewModelScope.launch(Dispatchers.IO) {
+                                savePipelineSemaphore.withPermit {
+                                    val saveResult = MediaStoreSaver.saveImageBytes(ctx, bytes, outName, isRaw = false)
+                                    val bmp = BitmapOrientationUtil.decodeOrientedBitmap(bytes)
+                                    if (bmp != null) {
+                                        val fileExif = PentaxExifReader.parse(bytes)
+                                        val cachedExif = _photoExifMap.value[taskSnap.photo.uniqueId]
+                                        val mergedExif = enrichExifWithManualLens(mergeExif(fileExif, cachedExif))
+                                        val studioState = _watermarkState.value
+                                        val cfg = WatermarkConfig.fromExif(mergedExif, studioState.config)
+                                        val graded = CubeLutEngine.applyLut(bmp, studioState.activeLutPreset, studioState.lutIntensity)
+                                        val toned = PostDarkroomAdjuster.apply(graded, studioState.postTone, cfg.showVintageDateImprint, cfg.dateTime)
+                                        val marked = if (cfg.watermarkEnabled) PentaxWatermarkRenderer.render(toned, cfg) else toned
+                                        MediaStoreSaver.saveBitmapAsJpeg(
+                                            ctx, marked, outName.substringBeforeLast('.') + "_pentax_wm.jpg",
+                                            exifToEmbed = mergedExif,
+                                            artist = cfg.signature,
+                                            copyright = cfg.copyrightNotice
+                                        )
+                                        if (marked !== toned) marked.recycle()
+                                        if (toned !== graded) toned.recycle()
+                                        if (graded !== bmp) graded.recycle()
+                                        bmp.recycle()
+                                    }
+                                    saveResult.onSuccess { savedPath ->
+                                        repo.historyStore.markDownloaded(taskSnap.photo.uniqueId)
+                                        _rawPhotos.update { list ->
+                                            list.map { p -> if (p.uniqueId == taskSnap.photo.uniqueId) p.copy(isDownloaded = true) else p }
+                                        }
+                                        _detailPhotos.update { list ->
+                                            list.map { p ->
+                                                if (p.uniqueId == taskSnap.photo.uniqueId || p.companionRaw?.uniqueId == taskSnap.photo.uniqueId) {
+                                                    p.copy(isDownloaded = true)
+                                                } else p
+                                            }
+                                        }
+                                        recomputeDisplayPhotos()
+                                        updateTask(taskSnap.id) { it.copy(status = TransferStatus.COMPLETED, progress = 1f, savedPath = savedPath, errorMessage = null) }
+                                    }.onFailure { err ->
+                                        updateTask(taskSnap.id) { it.copy(status = TransferStatus.FAILED, errorMessage = err.localizedMessage) }
                                     }
                                 }
-                                recomputeDisplayPhotos()
-                                updateTask(taskSnap.id) { it.copy(status = TransferStatus.COMPLETED, progress = 1f, savedPath = savedPath, errorMessage = null) }
-                            }.onFailure { err ->
-                                updateTask(taskSnap.id) { it.copy(status = TransferStatus.FAILED, errorMessage = err.localizedMessage) }
                             }
+                            pendingSaves += saveJob
+                        }.onFailure { err ->
+                            updateTask(next.id) { it.copy(status = TransferStatus.FAILED, errorMessage = "重试失败: ${err.localizedMessage}") }
                         }
                     }
-                    pendingSaves += saveJob
-                }.onFailure { err ->
-                    updateTask(next.id) { it.copy(status = TransferStatus.FAILED, errorMessage = "重试失败: ${err.localizedMessage}") }
                 }
-            }
-            // Wait for any final in-flight disk writes to commit before shutting down foreground service
-            pendingSaves.forEach { try { it.join() } catch (_: Exception) {} }
+                pendingSaves.forEach { try { it.join() } catch (_: Exception) {} }
             } finally {
                 exitExclusiveTransferMode()
                 TransferForegroundService.stop(ctx)
@@ -1636,6 +1718,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     var lastErr: String? = null
                     var receivedAnyFrame = false
                     repo.apiClient.streamLiveView(
+                        preferRgb565 = {
+                            val a = _liveAssistConfig.value
+                            !a.peakingEnabled && !a.zebraEnabled
+                        },
                         onFrame = { rawFrame ->
                             receivedAnyFrame = true
                             consecutiveFails = 0

@@ -11,9 +11,84 @@ import androidx.exifinterface.media.ExifInterface
 import com.pentax.k1sync.model.PhotoExif
 import java.io.File
 import java.io.FileOutputStream
+import java.io.OutputStream
 import kotlin.math.roundToInt
 
 object MediaStoreSaver {
+
+    /**
+     * Zero-heap streaming writer: opens a MediaStore / File OutputStream and passes it directly to `writer`
+     * so 45MB RAW / 15MB JPG downloads stream straight from TCP socket to flash storage using only a 64KB buffer!
+     */
+    suspend fun saveStreamDirectly(
+        context: Context,
+        fileName: String,
+        isRaw: Boolean = false,
+        subFolder: String = "PentaxK1",
+        writer: suspend (OutputStream) -> Unit
+    ): Result<String> = runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            val resolver = context.contentResolver
+            val (collectionUri, values, displayPath) = if (isRaw) {
+                Triple(
+                    MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                    ContentValues().apply {
+                        put(MediaStore.Downloads.DISPLAY_NAME, fileName)
+                        put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
+                        put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/PentaxK1_RAW")
+                        put(MediaStore.Downloads.IS_PENDING, 1)
+                    },
+                    "Download/PentaxK1_RAW/$fileName"
+                )
+            } else {
+                Triple(
+                    MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+                    ContentValues().apply {
+                        put(MediaStore.Images.Media.DISPLAY_NAME, fileName)
+                        put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                        put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/$subFolder")
+                        put(MediaStore.Images.Media.IS_PENDING, 1)
+                    },
+                    "Pictures/$subFolder/$fileName"
+                )
+            }
+            val uri = resolver.insert(collectionUri, values)
+                ?: error(if (isRaw) "无法创建 RAW 文件" else "无法写入系统相册")
+            try {
+                resolver.openOutputStream(uri)?.use { out ->
+                    writer(out)
+                    out.flush()
+                } ?: error("无法打开系统存储输出流")
+                values.clear()
+                values.put(if (isRaw) MediaStore.Downloads.IS_PENDING else MediaStore.Images.Media.IS_PENDING, 0)
+                resolver.update(uri, values, null, null)
+            } catch (t: Throwable) {
+                try { resolver.delete(uri, null, null) } catch (_: Exception) {}
+                throw t
+            }
+            displayPath
+        } else {
+            @Suppress("DEPRECATION")
+            val baseDir = if (isRaw) {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+            } else {
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            }
+            val dir = File(baseDir, if (isRaw) "PentaxK1_RAW" else subFolder).apply { mkdirs() }
+            val outFile = File(dir, fileName)
+            try {
+                FileOutputStream(outFile).use { fos ->
+                    writer(fos)
+                    fos.flush()
+                }
+            } catch (t: Throwable) {
+                try { outFile.delete() } catch (_: Exception) {}
+                throw t
+            }
+            MediaScannerConnection.scanFile(context, arrayOf(outFile.absolutePath), null, null)
+            outFile.absolutePath
+        }
+    }
 
     fun saveImageBytes(
         context: Context,
@@ -149,7 +224,7 @@ object MediaStoreSaver {
                 ei.setAttribute(ExifInterface.TAG_MAKE, "RICOH IMAGING COMPANY, LTD.")
             }
             ei.setAttribute(ExifInterface.TAG_MODEL, model)
-            ei.setAttribute(ExifInterface.TAG_SOFTWARE, "Pentax K-1 Sync v7.4.4")
+            ei.setAttribute(ExifInterface.TAG_SOFTWARE, "Pentax K-1 Sync v7.5.0")
             if (artist.isNotBlank()) {
                 ei.setAttribute(ExifInterface.TAG_ARTIST, artist.trim())
             }

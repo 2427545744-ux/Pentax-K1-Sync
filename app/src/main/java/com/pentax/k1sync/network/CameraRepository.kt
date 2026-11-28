@@ -16,6 +16,7 @@ import com.pentax.k1sync.model.StorageSlot
 import com.pentax.k1sync.util.BitmapOrientationUtil
 import com.pentax.k1sync.util.PentaxExifReader
 import kotlinx.coroutines.delay
+import java.io.OutputStream
 
 class CameraRepository(
     val wifiBinder: WifiNetworkBinder,
@@ -73,6 +74,11 @@ class CameraRepository(
         }
     }
 
+    suspend fun getCachedThumbnail(photo: CameraPhoto): Bitmap? {
+        val cacheKey = "${if (isMockMode) "mock" else "real"}_${photo.uniqueId}_thumb"
+        return thumbCache.get(cacheKey)
+    }
+
     suspend fun loadThumbnail(photo: CameraPhoto): Bitmap? {
         val cacheKey = "${if (isMockMode) "mock" else "real"}_${photo.uniqueId}_thumb"
         thumbCache.get(cacheKey)?.let { return it }
@@ -124,6 +130,7 @@ class CameraRepository(
     suspend fun downloadPhotoBytes(
         photo: CameraPhoto,
         quality: DownloadQuality,
+        useOkHttpCompat: Boolean = false,
         onProgress: (Long, Long) -> Unit
     ): Result<ByteArray> {
         return if (isMockMode) {
@@ -141,7 +148,25 @@ class CameraRepository(
             Result.success(mockRepo.renderMockPhotoBytes(photo, w, h))
         } else {
             val sizeParam = if (quality == DownloadQuality.VIEW) "view" else "full"
-            apiClient.downloadPhotoBytes(photo, sizeParam, onProgress)
+            apiClient.downloadPhotoBytes(photo, sizeParam, useOkHttpCompat = useOkHttpCompat, onProgress = onProgress)
+        }
+    }
+
+    suspend fun downloadPhotoToStream(
+        photo: CameraPhoto,
+        quality: DownloadQuality,
+        output: OutputStream,
+        useOkHttpCompat: Boolean = false,
+        onProgress: (Long, Long) -> Unit
+    ): Result<Long> {
+        return if (isMockMode) {
+            downloadPhotoBytes(photo, quality, useOkHttpCompat, onProgress).mapCatching { bytes ->
+                output.write(bytes)
+                bytes.size.toLong()
+            }
+        } else {
+            val sizeParam = if (quality == DownloadQuality.VIEW) "view" else "full"
+            apiClient.downloadPhotoToStream(photo, sizeParam, output, useOkHttpCompat = useOkHttpCompat, onProgress = onProgress)
         }
     }
 

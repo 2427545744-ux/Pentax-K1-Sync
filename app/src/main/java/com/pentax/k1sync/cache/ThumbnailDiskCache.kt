@@ -28,7 +28,8 @@ class ThumbnailDiskCache(context: Context) {
         memoryCache.get(key)?.let { return@withContext it }
         val file = File(cacheDir, "${hashKey(key)}.jpg")
         if (!file.exists()) return@withContext null
-        val bmp = BitmapFactory.decodeFile(file.absolutePath)
+        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+        val bmp = BitmapFactory.decodeFile(file.absolutePath, opts)
         if (bmp != null) memoryCache.put(key, bmp)
         bmp
     }
@@ -36,7 +37,8 @@ class ThumbnailDiskCache(context: Context) {
     private var writeCountSinceTrim = 0
 
     suspend fun put(key: String, bytes: ByteArray): Bitmap? = withContext(Dispatchers.IO) {
-        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return@withContext null
+        val opts = BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }
+        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts) ?: return@withContext null
         memoryCache.put(key, bmp)
         try {
             File(cacheDir, "${hashKey(key)}.jpg").writeBytes(bytes)

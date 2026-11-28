@@ -1,4 +1,4 @@
-# Pentax K-1 Sync v7.4.4
+# Pentax K-1 Sync v7.5.0
 
 专为 **PENTAX K-1（一代）** 打造的原生 Android 图传、无线遥控与 SpektraLab 81 波长物理暗房客户端（Kotlin + Jetpack Compose + C++20 JNI + Vulkan Compute + LibRaw 0.22.2）。
 
@@ -121,3 +121,16 @@
   - 暗房修图拉取的临时 RAW 改为**单槽即时覆盖**（切到下一张 RAW 或切回 JPG 立刻删掉前一张临时 RAW，不再滞留 3 张）；
   - App 启动时与退出时（`init` / `onCleared`）自动清空 `cacheDir/raw_studio` 残留临时 RAW；
   - 「机身」页 **「清理缩略图与临时 RAW 缓存」** 实时统计缩略图 + 临时 RAW + 分享缓存总占用，点击一键全清；同时补齐「极速传图 · 独占 Wi-Fi 射频」开关 UI。
+
+## v7.5.0 手机端全链路性能与传输引擎深度调优
+- **Wi-Fi 射频与进程绑定调优（`WifiNetworkBinder.kt`）**：
+  - 将 `WifiLock` 从可能关闭 802.11n AMPDU 帧聚合的 `WIFI_MODE_FULL_LOW_LATENCY` 切回专攻大文件吞吐的 **`WIFI_MODE_FULL_HIGH_PERF`**；
+  - 开启「极速传图 · 独占 Wi-Fi 射频」时，传输期间仅对当前 App 进程临时执行 `bindProcessToNetwork(wifiNet)`（传完立刻恢复 `null`，不影响微信等其他 App），防止国产 ROM 将无外网 `wlan0` 压进低占空比副网调度；
+  - 新增实时无线链路遥测（`2.4GHz · Mbps · dBm`），直接显示在「机身」页连接状态栏。
+- **零堆内存流式直写 + 64KB 标准无缩放 Keep-Alive TCP（`PentaxK1ApiClient.kt` + `MediaStoreSaver.kt`）**：
+  - 取消可能触发 K-1 2016 年嵌入式 RTOS Window Scaling 兼容降速的 `512KB SO_RCVBUF`，改用干净的 `64KB` 标准接收窗 + 批量 **HTTP/1.1 Keep-Alive 连接复用** + 传输线程 `THREAD_PRIORITY_DISPLAY` 提权；
+  - 常规 JPG/RAW 下载与暗房拉取 RAW 全面改为 **64KB 缓冲直接流式落盘至 MediaStore / `raw_studio`**，彻底消除 45MB 大数组分配与下载中途 ART GC 停顿；
+  - 「机身」页新增 **「传输引擎：系统 OkHttp 兼容模式」** 一键切换，方便在当前机型上直接对照测速。
+- **图库与取景器手机端流畅度提速**：
+  - 缩略图与无辅助叠加的 Live View 帧全面改用 **`RGB_565`** 解码（内存减半、GPU 上传翻倍顺滑），图库内存缩略图 LRU 上限扩容至 320 张；
+  - 修复传输期间滑动图库读取磁盘缩略图缓存键不匹配的漏命中问题。

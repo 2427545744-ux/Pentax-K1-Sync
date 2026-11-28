@@ -90,6 +90,8 @@ fun SyncScreen(viewModel: MainViewModel) {
     val autoWatermark by viewModel.autoWatermarkOnTransfer.collectAsState()
     val exclusiveWifiTransfer by viewModel.exclusiveWifiTransfer.collectAsState()
     val cacheSizeMb by viewModel.cacheSizeMbState.collectAsState()
+    val useOkHttpCompat by viewModel.useOkHttpCompatDownload.collectAsState()
+    val linkTelemetry by viewModel.wifiLinkTelemetry.collectAsState()
     val tasks by viewModel.transferTasks.collectAsState()
     val apiLogEnabled by viewModel.apiLogEnabled.collectAsState()
     val apiLogs by viewModel.apiLogEntries.collectAsState()
@@ -481,6 +483,20 @@ fun SyncScreen(viewModel: MainViewModel) {
                     Switch(
                         checked = exclusiveWifiTransfer, onCheckedChange = { viewModel.setExclusiveWifiTransfer(it) },
                         colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = PentaxGreen, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
+                    )
+                }
+                HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Text("传输引擎：系统 OkHttp 兼容模式", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("关闭 = 裸 TCP 64KB 零堆流式复用（推荐）；开启 = 系统 OkHttp 流式对照测速", color = InkSecondary, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = useOkHttpCompat, onCheckedChange = { viewModel.setUseOkHttpCompatDownload(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = WarmAmber, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
                     )
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)

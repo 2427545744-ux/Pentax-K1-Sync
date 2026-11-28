@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.PowerManager
@@ -26,6 +27,26 @@ import javax.net.SocketFactory
  *    never hijacking the system's internet route.
  * 3. Requests a concurrent Cellular Internet keep-alive network so Android keeps 4G/5G active.
  */
+data class WifiLinkTelemetry(
+    val linkSpeedMbps: Int = 0,
+    val rssiDbm: Int = 0,
+    val frequencyMhz: Int = 0
+) {
+    fun formatSummary(): String {
+        val band = when {
+            frequencyMhz in 2400..2500 -> "2.4GHz"
+            frequencyMhz in 4900..5900 -> "5GHz"
+            frequencyMhz > 5900 -> "6GHz"
+            else -> ""
+        }
+        val parts = mutableListOf<String>()
+        if (band.isNotEmpty()) parts += band
+        if (linkSpeedMbps > 0) parts += "${linkSpeedMbps}Mbps"
+        if (rssiDbm in -110..-10) parts += "${rssiDbm}dBm"
+        return parts.joinToString(" · ")
+    }
+}
+
 class WifiNetworkBinder(context: Context) {
 
     private val appContext = context.applicationContext
@@ -40,6 +61,10 @@ class WifiNetworkBinder(context: Context) {
     private var activeWifiLock: WifiManager.WifiLock? = null
     private var activeWakeLock: PowerManager.WakeLock? = null
     private var cellularPausedForTransfer: Boolean = false
+    private var processBoundForTransfer: Boolean = false
+
+    private val _linkTelemetry = MutableStateFlow<WifiLinkTelemetry?>(null)
+    val linkTelemetry: StateFlow<WifiLinkTelemetry?> = _linkTelemetry.asStateFlow()
 
     private val _boundNetwork = MutableStateFlow<Network?>(null)
     val boundNetwork: StateFlow<Network?> = _boundNetwork.asStateFlow()
@@ -283,17 +308,44 @@ class WifiNetworkBinder(context: Context) {
      * so the phone's Wi-Fi chip does NOT enter Power-Save Mode (PSM) on a no-internet camera hotspot!
      * Optionally suspends 5G cellular keep-alive during bulk transfers to eliminate radio time-slicing.
      */
+    fun refreshLinkTelemetry(): WifiLinkTelemetry? {
+        val net = _boundNetwork.value
+        val wifiInfo: WifiInfo? = try {
+            val fromCaps = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && net != null) {
+                connectivityManager.getNetworkCapabilities(net)?.transportInfo as? WifiInfo
+            } else null
+            @Suppress("DEPRECATION")
+            fromCaps ?: wifiManager?.connectionInfo
+        } catch (_: Exception) {
+            null
+        }
+        val telemetry = if (wifiInfo != null && (wifiInfo.linkSpeed > 0 || wifiInfo.rssi in -110..-10)) {
+            WifiLinkTelemetry(
+                linkSpeedMbps = wifiInfo.linkSpeed.coerceAtLeast(0),
+                rssiDbm = wifiInfo.rssi,
+                frequencyMhz = wifiInfo.frequency
+            )
+        } else null
+        _linkTelemetry.value = telemetry
+        return telemetry
+    }
+
+    /**
+     * Phone-side bulk transfer boost:
+     * - Acquires WIFI_MODE_FULL_HIGH_PERF (NOT LOW_LATENCY, which disables 802.11n AMPDU frame aggregation on many phones!).
+     * - Temporarily binds ONLY this app process to the K-1 Wi-Fi Network during exclusive transfers so Android/HyperOS/ColorOS
+     *   promotes wlan0 out of secondary P2P duty-cycling (without impacting WeChat or other apps), and restores immediately after!
+     */
     fun acquireTransferBoost(pauseCellularKeepAlive: Boolean = false) {
         synchronized(boostLock) {
+            refreshLinkTelemetry()
             try {
                 if (activeWifiLock == null) {
-                    val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                    } else {
-                        @Suppress("DEPRECATION")
-                        WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                    }
-                    activeWifiLock = wifiManager?.createWifiLock(mode, "PentaxK1Sync:FastTransfer")?.apply {
+                    @Suppress("DEPRECATION")
+                    activeWifiLock = wifiManager?.createWifiLock(
+                        WifiManager.WIFI_MODE_FULL_HIGH_PERF,
+                        "PentaxK1Sync:BulkTransfer"
+                    )?.apply {
                         setReferenceCounted(false)
                     }
                 }
@@ -313,9 +365,20 @@ class WifiNetworkBinder(context: Context) {
                 }
             } catch (_: Exception) {
             }
-            if (pauseCellularKeepAlive && activeCellularCallback != null) {
-                cellularPausedForTransfer = true
-                stopCellularKeepAlive()
+            if (pauseCellularKeepAlive) {
+                if (activeCellularCallback != null) {
+                    cellularPausedForTransfer = true
+                    stopCellularKeepAlive()
+                }
+                val wifiNet = _boundNetwork.value
+                if (wifiNet != null && !processBoundForTransfer) {
+                    try {
+                        if (connectivityManager.bindProcessToNetwork(wifiNet)) {
+                            processBoundForTransfer = true
+                        }
+                    } catch (_: Exception) {
+                    }
+                }
                 updateDualNetStatus()
             }
         }
@@ -331,12 +394,17 @@ class WifiNetworkBinder(context: Context) {
                 if (activeWakeLock?.isHeld == true) activeWakeLock?.release()
             } catch (_: Exception) {
             }
+            if (processBoundForTransfer) {
+                processBoundForTransfer = false
+                try { connectivityManager.bindProcessToNetwork(null) } catch (_: Exception) {}
+            }
             if (cellularPausedForTransfer) {
                 cellularPausedForTransfer = false
                 if (_boundNetwork.value != null) {
                     startCellularKeepAlive()
                 }
             }
+            refreshLinkTelemetry()
         }
     }
 
@@ -350,6 +418,7 @@ class WifiNetworkBinder(context: Context) {
         try { connectivityManager.bindProcessToNetwork(null) } catch (_: Exception) {}
         _boundNetwork.value = null
         _isLocalOnlyP2p.value = false
+        _linkTelemetry.value = null
         if (!silent) {
             _statusMessage.value = "已释放相机热点路由 · 移动网络已恢复"
         }
