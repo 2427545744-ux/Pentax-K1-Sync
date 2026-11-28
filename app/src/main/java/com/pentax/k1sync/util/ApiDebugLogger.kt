@@ -61,7 +61,7 @@ object ApiDebugLogger {
         val list = _entries.value
         if (list.isEmpty()) return "=== Pentax K-1 Sync Protocol Log (空) ==="
         return buildString {
-            appendLine("=== Pentax K-1 Sync v7.5.0 Protocol Log (${list.size} entries) ===")
+            appendLine("=== Pentax K-1 Sync v7.5.1 Protocol Log (${list.size} entries) ===")
             list.forEach { e ->
                 val statusStr = if (e.statusCode > 0) "HTTP ${e.statusCode}" else "ERR"
                 appendLine("[${e.time}] ${e.method} ${e.path} -> $statusStr (${e.elapsedMs}ms) | ${e.detail}")

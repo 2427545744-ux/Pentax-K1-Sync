@@ -224,7 +224,7 @@ object MediaStoreSaver {
                 ei.setAttribute(ExifInterface.TAG_MAKE, "RICOH IMAGING COMPANY, LTD.")
             }
             ei.setAttribute(ExifInterface.TAG_MODEL, model)
-            ei.setAttribute(ExifInterface.TAG_SOFTWARE, "Pentax K-1 Sync v7.5.0")
+            ei.setAttribute(ExifInterface.TAG_SOFTWARE, "Pentax K-1 Sync v7.5.1")
             if (artist.isNotBlank()) {
                 ei.setAttribute(ExifInterface.TAG_ARTIST, artist.trim())
             }

@@ -3414,7 +3414,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _watermarkState.update { it.copy(batchProgress = BatchWatermarkProgress(idx + 1, chosen.size)) }
                     try {
                         val dlQuality = if (!photo.isRaw && baseConfig.highQualityExport) DownloadQuality.FULL_JPG else DownloadQuality.VIEW
-                        val bytes = repo.downloadPhotoBytes(photo, dlQuality) { _, _ -> }.getOrNull()
+                        val bytes = repo.downloadPhotoBytes(photo, dlQuality, useOkHttpCompat = _useOkHttpCompatDownload.value) { _, _ -> }.getOrNull()
                             ?: return@forEachIndexed
                         val bmp = BitmapOrientationUtil.decodeOrientedBitmap(bytes) ?: return@forEachIndexed
                         val fileExif = PentaxExifReader.parse(bytes)
@@ -3565,7 +3565,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     showToast("正在从 K-1 拉取原图以保持 100% 原始分辨率...")
                     enterExclusiveTransferMode()
                     val fullBytes = try {
-                        repo.downloadPhotoBytes(camPhoto, DownloadQuality.FULL_JPG) { _, _ -> }.getOrNull()
+                        repo.downloadPhotoBytes(camPhoto, DownloadQuality.FULL_JPG, useOkHttpCompat = _useOkHttpCompatDownload.value) { _, _ -> }.getOrNull()
                     } finally {
                         exitExclusiveTransferMode()
                     }

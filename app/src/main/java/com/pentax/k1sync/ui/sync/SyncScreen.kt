@@ -155,7 +155,14 @@ fun SyncScreen(viewModel: MainViewModel) {
                     Column(modifier = Modifier.weight(1f)) {
                         Text(if (cameraInfo.connected) cameraInfo.model else "PENTAX K-1 (一代)", color = InkPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold)
                         Spacer(Modifier.height(2.dp))
-                        Text(wifiStatus, color = if (cameraInfo.connected) PentaxGreen else InkSecondary, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        val linkSummary = linkTelemetry?.formatSummary().orEmpty()
+                        Text(
+                            text = if (cameraInfo.connected && linkSummary.isNotBlank()) "$wifiStatus · $linkSummary" else wifiStatus,
+                            color = if (cameraInfo.connected) PentaxGreen else InkSecondary,
+                            fontSize = 11.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
                     }
                     if (isConnecting) {
                         CircularProgressIndicator(color = PentaxGreen, strokeWidth = 2.dp, modifier = Modifier.size(20.dp))

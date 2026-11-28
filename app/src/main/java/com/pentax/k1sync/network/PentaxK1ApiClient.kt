@@ -727,7 +727,11 @@ class PentaxK1ApiClient(
      * 3. Auto-probes `/v1/liveview` first and falls back to `/v1/display` if 404/405/501 or 0 frames.
      * 4. Uses Content-Length fast path for multipart MJPEG AND resilient marker-aware JPEG framing as fallback.
      */
-    suspend fun streamLiveView(onFrame: (Bitmap) -> Unit, onError: (String) -> Unit) =
+    suspend fun streamLiveView(
+        preferRgb565: () -> Boolean = { false },
+        onFrame: (Bitmap) -> Unit,
+        onError: (String) -> Unit
+    ) =
         withContext(Dispatchers.IO) {
             closeActiveLiveViewSocket()
 

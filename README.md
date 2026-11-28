@@ -1,4 +1,4 @@
-# Pentax K-1 Sync v7.5.0
+# Pentax K-1 Sync v7.5.1
 
 专为 **PENTAX K-1（一代）** 打造的原生 Android 图传、无线遥控与 SpektraLab 81 波长物理暗房客户端（Kotlin + Jetpack Compose + C++20 JNI + Vulkan Compute + LibRaw 0.22.2）。
 
@@ -134,3 +134,7 @@
 - **图库与取景器手机端流畅度提速**：
   - 缩略图与无辅助叠加的 Live View 帧全面改用 **`RGB_565`** 解码（内存减半、GPU 上传翻倍顺滑），图库内存缩略图 LRU 上限扩容至 320 张；
   - 修复传输期间滑动图库读取磁盘缩略图缓存键不匹配的漏命中问题。
+
+## v7.5.1 编译修复
+- 修复 `PentaxK1ApiClient.kt` 中 `streamLiveView()` 函数签名遗漏 `preferRgb565` 参数导致的 Kotlin 编译错误。
+- 补齐 `SyncScreen.kt` 连接状态栏的实时 Wi-Fi 链路遥测展示（频段 / Mbps / dBm），并让批量暗房与原分辨率导出拉图同步遵循所选传输引擎模式。
