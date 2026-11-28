@@ -89,6 +89,7 @@ fun SyncScreen(viewModel: MainViewModel) {
     val defaultQuality by viewModel.defaultQuality.collectAsState()
     val autoWatermark by viewModel.autoWatermarkOnTransfer.collectAsState()
     val exclusiveWifiTransfer by viewModel.exclusiveWifiTransfer.collectAsState()
+    val cacheSizeMb by viewModel.cacheSizeMbState.collectAsState()
     val tasks by viewModel.transferTasks.collectAsState()
     val apiLogEnabled by viewModel.apiLogEnabled.collectAsState()
     val apiLogs by viewModel.apiLogEntries.collectAsState()
@@ -312,9 +313,9 @@ fun SyncScreen(viewModel: MainViewModel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Rounded.DeleteOutline, null, tint = InkSecondary, modifier = Modifier.size(18.dp))
                         Spacer(Modifier.width(10.dp))
-                        Text("清理本地缩略图与预览缓存", color = InkPrimary, fontSize = 13.sp)
+                        Text("清理缩略图与临时 RAW 缓存", color = InkPrimary, fontSize = 13.sp)
                     }
-                    Text("${"%.1f".format(viewModel.cacheSizeMb())} MB", color = InkSecondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
+                    Text("${"%.1f".format(cacheSizeMb)} MB", color = InkSecondary, fontSize = 12.sp, fontFamily = FontFamily.Monospace)
                 }
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
                 // Config Backup & Restore Row
@@ -468,6 +469,20 @@ fun SyncScreen(viewModel: MainViewModel) {
                     modifier = Modifier.fillMaxWidth()
                 )
                 Text(defaultQuality.desc, color = InkSecondary, fontSize = 11.sp)
+                HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f).padding(end = 10.dp)) {
+                        Text("极速传图 · 独占 Wi-Fi 射频", color = InkPrimary, fontSize = 13.sp, fontWeight = FontWeight.Medium)
+                        Text("下载大图时锁定高性能 Wi-Fi 并暂停后台与 5G 抢占（传完自动恢复）", color = InkSecondary, fontSize = 11.sp)
+                    }
+                    Switch(
+                        checked = exclusiveWifiTransfer, onCheckedChange = { viewModel.setExclusiveWifiTransfer(it) },
+                        colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = PentaxGreen, uncheckedTrackColor = ObsidianBg, uncheckedBorderColor = HairlineBorder)
+                    )
+                }
                 HorizontalDivider(thickness = 0.5.dp, color = SubtleDivider)
                 Row(
                     modifier = Modifier.fillMaxWidth(),

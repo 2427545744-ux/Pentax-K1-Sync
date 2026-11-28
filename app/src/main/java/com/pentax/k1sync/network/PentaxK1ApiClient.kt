@@ -351,18 +351,12 @@ class PentaxK1ApiClient(
             socket.connect(InetSocketAddress(host, port), 5_000)
 
             val reqStr = buildString {
-                append("GET ").append(path).append(" HTTP/1.1
-")
-                append("Host: ").append(host).append("
-")
-                append("Accept: */*
-")
-                append("Accept-Encoding: identity
-")
-                append("Connection: close
-")
-                append("
-")
+                append("GET ").append(path).append(" HTTP/1.1\r\n")
+                append("Host: ").append(host).append("\r\n")
+                append("Accept: */*\r\n")
+                append("Accept-Encoding: identity\r\n")
+                append("Connection: close\r\n")
+                append("\r\n")
             }
             socket.getOutputStream().apply {
                 write(reqStr.toByteArray(Charsets.US_ASCII))

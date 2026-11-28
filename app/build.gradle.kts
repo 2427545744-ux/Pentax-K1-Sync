@@ -16,8 +16,8 @@ android {
         applicationId = "com.pentax.k1sync"
         minSdk = 28
         targetSdk = 35
-        versionCode = 25
-        versionName = "7.4.3"
+        versionCode = 26
+        versionName = "7.4.4"
 
         vectorDrawables {
             useSupportLibrary = true

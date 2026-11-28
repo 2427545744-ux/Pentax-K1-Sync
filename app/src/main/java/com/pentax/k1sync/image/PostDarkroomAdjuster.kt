@@ -900,31 +900,38 @@ object PostDarkroomAdjuster {
                 smoothDark = separableBoxBlurFloat(darkSmall, dw, dh, radius = 3, passes = 2)
             }
 
+            val smoothDarkSnap: FloatArray? = smoothDark
+            val dwSnap = dw
+            val dhSnap = dh
+            val atmRSnap = atmR
+            val atmGSnap = atmG
+            val atmBSnap = atmB
+
             fun applyDehazeToPixel(px: Int, gx: Int, gy: Int): Int {
                 val a = px and 0xFF000000.toInt()
                 var r = ((px ushr 16) and 0xFF) * inv255
                 var g = ((px ushr 8) and 0xFF) * inv255
                 var b = (px and 0xFF) * inv255
-                if (dehazeVal > 0f && smoothDark != null) {
-                    val dwM1 = (dw - 1).coerceAtLeast(1)
-                    val dhM1 = (dh - 1).coerceAtLeast(1)
+                if (dehazeVal > 0f && smoothDarkSnap != null) {
+                    val dwM1 = (dwSnap - 1).coerceAtLeast(1)
+                    val dhM1 = (dhSnap - 1).coerceAtLeast(1)
                     val fx = (gx.toFloat() / (w - 1).coerceAtLeast(1)) * dwM1
                     val fy = (gy.toFloat() / (h - 1).coerceAtLeast(1)) * dhM1
                     val sx0 = fx.toInt().coerceIn(0, dwM1); val sx1 = (sx0 + 1).coerceAtMost(dwM1)
                     val sy0 = fy.toInt().coerceIn(0, dhM1); val sy1 = (sy0 + 1).coerceAtMost(dhM1)
                     val wx = fx - sx0; val wy = fy - sy0
-                    val d00 = smoothDark[sy0 * dw + sx0]; val d10 = smoothDark[sy0 * dw + sx1]
-                    val d01 = smoothDark[sy1 * dw + sx0]; val d11 = smoothDark[sy1 * dw + sx1]
+                    val d00 = smoothDarkSnap[sy0 * dwSnap + sx0]; val d10 = smoothDarkSnap[sy0 * dwSnap + sx1]
+                    val d01 = smoothDarkSnap[sy1 * dwSnap + sx0]; val d11 = smoothDarkSnap[sy1 * dwSnap + sx1]
                     val veil = (d00 * (1f - wx) + d10 * wx) * (1f - wy) + (d01 * (1f - wx) + d11 * wx) * wy
                     val t = (1f - dehazeVal * 0.72f * veil).coerceIn(0.32f, 1f)
-                    r = ((r - atmR * (1f - t)) / t).coerceIn(0f, 1f)
-                    g = ((g - atmG * (1f - t)) / t).coerceIn(0f, 1f)
-                    b = ((b - atmB * (1f - t)) / t).coerceIn(0f, 1f)
+                    r = ((r - atmRSnap * (1f - t)) / t).coerceIn(0f, 1f)
+                    g = ((g - atmGSnap * (1f - t)) / t).coerceIn(0f, 1f)
+                    b = ((b - atmBSnap * (1f - t)) / t).coerceIn(0f, 1f)
                 } else if (dehazeVal < 0f) {
                     val mist = (-dehazeVal) * 0.42f
-                    r = (r * (1f - mist) + atmR * mist).coerceIn(0f, 1f)
-                    g = (g * (1f - mist) + atmG * mist).coerceIn(0f, 1f)
-                    b = (b * (1f - mist) + atmB * mist).coerceIn(0f, 1f)
+                    r = (r * (1f - mist) + atmRSnap * mist).coerceIn(0f, 1f)
+                    g = (g * (1f - mist) + atmGSnap * mist).coerceIn(0f, 1f)
+                    b = (b * (1f - mist) + atmBSnap * mist).coerceIn(0f, 1f)
                 }
                 return a or
                     (((r * 255f + 0.5f).toInt().coerceIn(0, 255)) shl 16) or
@@ -956,6 +963,9 @@ object PostDarkroomAdjuster {
                 }
                 lowLuma = separableBoxBlurFloat(small, lw, lh, radius = 3, passes = 2)
             }
+
+            val lowLumaSnap: FloatArray? = lowLuma
+            val lwSnap = lw
 
             // Allocate reusable 256-row (+2 halo for 3x3 Sharpen) strip buffers (~7.5MB IntArray + ~7.5MB FloatArray!)
             val stripCoreRows = 256.coerceAtMost(h.coerceAtLeast(1))
@@ -1045,13 +1055,13 @@ object PostDarkroomAdjuster {
                                 if ((doClarity || doSharpen) && stripLuma != null) {
                                     val lCenter = stripLuma[idx]
                                     var deltaL = 0f
-                                    if (doClarity && lowLuma != null) {
+                                    if (doClarity && lowLumaSnap != null) {
                                         val fx = (x.toFloat() / (w - 1).coerceAtLeast(1)) * lwM1
                                         val sx0 = fx.toInt().coerceIn(0, lwM1)
                                         val sx1 = (sx0 + 1).coerceAtMost(lwM1)
                                         val wx = fx - sx0
-                                        val b00 = lowLuma[sy0 * lw + sx0]; val b10 = lowLuma[sy0 * lw + sx1]
-                                        val b01 = lowLuma[sy1 * lw + sx0]; val b11 = lowLuma[sy1 * lw + sx1]
+                                        val b00 = lowLumaSnap[sy0 * lwSnap + sx0]; val b10 = lowLumaSnap[sy0 * lwSnap + sx1]
+                                        val b01 = lowLumaSnap[sy1 * lwSnap + sx0]; val b11 = lowLumaSnap[sy1 * lwSnap + sx1]
                                         val blurL = (b00 * (1f - wx) + b10 * wx) * (1f - wy) + (b01 * (1f - wx) + b11 * wx) * wy
                                         val midWeight = (4f * lCenter * (1f - lCenter)).coerceIn(0f, 1f)
                                         deltaL += (lCenter - blurL) * clarifyGain * midWeight

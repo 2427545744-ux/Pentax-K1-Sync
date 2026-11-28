@@ -1,4 +1,4 @@
-# Pentax K-1 Sync v7.4.3
+# Pentax K-1 Sync v7.4.4
 
 专为 **PENTAX K-1（一代）** 打造的原生 Android 图传、无线遥控与 SpektraLab 81 波长物理暗房客户端（Kotlin + Jetpack Compose + C++20 JNI + Vulkan Compute + LibRaw 0.22.2）。
 
@@ -111,3 +111,13 @@
 ## v7.4.3 JPG 高光通透度优化 & 负片底片直扫开关
 - **JPG 高光区保色相逆色调映射（`spektra_jni.cpp`）**：针对 sRGB JPG 输入，仅在 `sRGB > 195`（线性亮度 `> 0.55`）的高光区域施加 C1 平滑单调高光余量扩展（最高 `+1.68 EV`），暗部、中间调与人像肤色 100% 零改动、RGB 色相比例严格不变；14-bit RAW 完全不经过此转换，保持原始线性传感器数据。
 - **新增「底片直扫 (通透)」一键切换（`WatermarkScreen.kt`）**：为彩色与黑白负片开放 `底片直扫` 选项，一键绕过光学相纸 D-min 压白，呈现如哈苏/诺日士扫描仪般明亮通透的高光层次。
+
+## v7.4.4 编译错误修复 & 临时 RAW 缓存自动/手动全清理
+- **彻底修复 3 处编译报错**：
+  - 修复 `PentaxK1ApiClient.kt` 中 `downloadPhotoFastRawTcp` 请求头字符串意外换行语法错误；
+  - 修复 `PostDarkroomAdjuster.kt` 嵌套函数捕获可变 `var smoothDark / lowLuma` 导致 Kotlin Smart-Cast 编译失败；
+  - 修复 `MainViewModel.kt` 中 `exportWatermarkedPhoto / shareWatermarkedPhoto` 的 `var finalBitmap` 跨协程 Smart-Cast 编译错误。
+- **临时 RAW 缓存全生命周期清理**：
+  - 暗房修图拉取的临时 RAW 改为**单槽即时覆盖**（切到下一张 RAW 或切回 JPG 立刻删掉前一张临时 RAW，不再滞留 3 张）；
+  - App 启动时与退出时（`init` / `onCleared`）自动清空 `cacheDir/raw_studio` 残留临时 RAW；
+  - 「机身」页 **「清理缩略图与临时 RAW 缓存」** 实时统计缩略图 + 临时 RAW + 分享缓存总占用，点击一键全清；同时补齐「极速传图 · 独占 Wi-Fi 射频」开关 UI。

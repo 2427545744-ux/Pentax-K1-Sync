@@ -292,6 +292,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _exclusiveWifiTransfer = MutableStateFlow(repo.prefsStore.loadExclusiveWifiTransfer())
     val exclusiveWifiTransfer: StateFlow<Boolean> = _exclusiveWifiTransfer.asStateFlow()
 
+    private val _cacheSizeMb = MutableStateFlow(0f)
+    val cacheSizeMbState: StateFlow<Float> = _cacheSizeMb.asStateFlow()
+
     private val savePipelineSemaphore = Semaphore(2)
 
     private val _transferTasks = MutableStateFlow<List<TransferTask>>(emptyList())
@@ -437,6 +440,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var cachedPreToneBitmap: Bitmap? = null
 
     init {
+        // Purge any leftover temporary RAW files from prior sessions (even after force-swipe kill)
+        viewModelScope.launch(Dispatchers.IO) {
+            cleanRawStudioCache(keepFilePath = null)
+            _cacheSizeMb.value = computeTotalCacheSizeMb()
+        }
         viewModelScope.launch(Dispatchers.Default) {
             val loadedCatalog = SpektraCatalog.loadFullCatalog(getApplication())
             val savedPrefs = repo.prefsStore.loadWatermarkDefaults()
@@ -469,6 +477,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         if (tab == AppTab.GALLERY && _cameraInfo.value.connected) {
             triggerSilentPhotoSync()
+        } else if (tab == AppTab.SYNC) {
+            viewModelScope.launch(Dispatchers.IO) { refreshCacheSize() }
         }
     }
 
@@ -691,15 +701,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun rawStudioCacheDir(): File = File(getApplication<Application>().cacheDir, "raw_studio")
+
+    private fun cleanRawStudioCache(keepFilePath: String? = null) {
+        try {
+            val dir = rawStudioCacheDir()
+            if (!dir.exists()) return
+            val keepCanonical = keepFilePath?.let { runCatching { File(it).canonicalPath }.getOrNull() }
+            dir.listFiles()?.forEach { f ->
+                val fCanonical = runCatching { f.canonicalPath }.getOrNull()
+                if (keepCanonical == null || fCanonical != keepCanonical) {
+                    f.delete()
+                }
+            }
+        } catch (_: Exception) {
+        }
+    }
+
     fun clearThumbnailCache() {
         repo.thumbCache.clearAll()
         repo.previewCache.clear()
         _thumbnails.value = emptyMap()
         _previewBitmaps.value = emptyMap()
-        showToast("已清理本地缩略图与预览缓存")
+        val activeRaw = _watermarkState.value.sourceRawPath
+        val keepingActive = _watermarkState.value.isRawSource && !activeRaw.isNullOrBlank()
+        cleanRawStudioCache(keepFilePath = if (keepingActive) activeRaw else null)
+        try { File(getApplication<Application>().cacheDir, "shared").listFiles()?.forEach { it.delete() } } catch (_: Exception) {}
+        _cacheSizeMb.value = computeTotalCacheSizeMb()
+        showToast(
+            if (keepingActive) "已清理缩略图与历史 RAW 缓存（当前编辑中的 RAW 将在切换/退出后自动清理）"
+            else "已清空全部缩略图与临时 RAW 缓存"
+        )
     }
 
-    fun cacheSizeMb(): Float = repo.thumbCache.cacheSizeMb()
+    private fun computeTotalCacheSizeMb(): Float {
+        val thumbMb = repo.thumbCache.cacheSizeMb()
+        val rawBytes = rawStudioCacheDir().listFiles()?.sumOf { it.length() } ?: 0L
+        val sharedBytes = File(getApplication<Application>().cacheDir, "shared").listFiles()?.sumOf { it.length() } ?: 0L
+        return thumbMb + (rawBytes + sharedBytes) / (1024f * 1024f)
+    }
+
+    fun refreshCacheSize() {
+        _cacheSizeMb.value = computeTotalCacheSizeMb()
+    }
+
+    fun cacheSizeMb(): Float {
+        val v = computeTotalCacheSizeMb()
+        _cacheSizeMb.value = v
+        return v
+    }
 
     // ---------------------------------------------------------
     // Gallery & Split-Screen Photo Compare
@@ -1225,6 +1275,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (bmp != null) {
                 clearStudioHistory()
                 releaseSpektraSession()
+                cleanRawStudioCache(keepFilePath = null)
                 val nextCfg = WatermarkConfig.fromExif(enrichExifWithManualLens(exif), _watermarkState.value.config)
                 _watermarkState.update {
                     it.copy(
@@ -1309,7 +1360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             bytesRes.onSuccess { bytes ->
                 val cacheFile = withContext(Dispatchers.IO) {
                     val dir = File(getApplication<Application>().cacheDir, "raw_studio").apply { mkdirs() }
-                    dir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
+                    dir.listFiles()?.forEach { it.delete() }
                     File(dir, rawPhoto.file).apply { writeBytes(bytes) }
                 }
                 val parsedExif = withContext(Dispatchers.IO) { mergeExif(PentaxExifReader.parse(bytes), exif) }
@@ -2830,6 +2881,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                 clearStudioHistory()
                 releaseSpektraSession()
+                cleanRawStudioCache(keepFilePath = null)
                 _watermarkState.update { state ->
                     state.copy(
                         sourceBitmap = bmp,
@@ -2877,7 +2929,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 val displayName = resolveUriDisplayName(uri).ifBlank { "PENTAX_RAW_${System.currentTimeMillis() % 10000}.DNG" }
                 val rawDir = File(ctx.cacheDir, "raw_studio").apply { mkdirs() }
-                rawDir.listFiles()?.sortedByDescending { it.lastModified() }?.drop(2)?.forEach { it.delete() }
+                rawDir.listFiles()?.forEach { it.delete() }
                 val outFile = File(rawDir, displayName.replace(Regex("[^a-zA-Z0-9._-]"), "_"))
 
                 ctx.contentResolver.openInputStream(uri)?.use { input ->
@@ -3445,19 +3497,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     renderFullPipeline(state, isExport = true, overrideSourceBitmap = pulledFullBmp, exportMaxEdgeOverride = 4096)
                 }
 
-                finalBitmap = pair?.first
-                if (pulledFullBmp != null && pulledFullBmp !== finalBitmap) {
-                    pulledFullBmp.recycle()
+                val exportBmp = pair?.first
+                finalBitmap = exportBmp
+                val pulledToRecycle = pulledFullBmp
+                if (pulledToRecycle != null && pulledToRecycle !== exportBmp) {
+                    pulledToRecycle.recycle()
                     pulledFullBmp = null
                 }
 
-                if (finalBitmap == null) {
+                if (exportBmp == null) {
                     showToast("渲染导出失败: ${_watermarkState.value.spektraError ?: "请稍后重试"}")
                     return@launch
                 }
 
-                val outW = finalBitmap.width
-                val outH = finalBitmap.height
+                val outW = exportBmp.width
+                val outH = exportBmp.height
                 val baseName = state.sourceFileName.substringBeforeLast('.')
                 val tag = if (state.colorGradeMode == ColorGradeMode.SPEKTRA_DARKROOM) {
                     state.spektraParams.filmStockId
@@ -3469,7 +3523,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val result = withContext(Dispatchers.IO) {
                     MediaStoreSaver.saveBitmapAsJpeg(
                         context = getApplication(),
-                        bitmap = finalBitmap,
+                        bitmap = exportBmp,
                         fileName = outName,
                         quality = if (state.config.highQualityExport) 97 else 90,
                         exifToEmbed = exifToWrite,
@@ -3489,11 +3543,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (t: Throwable) {
                 showToast("导出异常: ${t.localizedMessage ?: t.javaClass.simpleName}")
             } finally {
-                if (pulledFullBmp != null && pulledFullBmp !== finalBitmap && pulledFullBmp !== state.sourceBitmap && !pulledFullBmp.isRecycled) {
-                    pulledFullBmp.recycle()
+                val pBmp = pulledFullBmp
+                val fBmp = finalBitmap
+                if (pBmp != null && pBmp !== fBmp && pBmp !== state.sourceBitmap && !pBmp.isRecycled) {
+                    pBmp.recycle()
                 }
-                if (finalBitmap != null && finalBitmap !== state.sourceBitmap && !finalBitmap.isRecycled) {
-                    finalBitmap.recycle()
+                if (fBmp != null && fBmp !== state.sourceBitmap && !fBmp.isRecycled) {
+                    fBmp.recycle()
                 }
                 _watermarkState.update { it.copy(isSaving = false) }
             }
@@ -3509,19 +3565,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             var finalBitmap: Bitmap? = null
             try {
                 val pair = renderFullPipeline(state, isExport = true, exportMaxEdgeOverride = 2400)
-                finalBitmap = pair?.first
-                if (finalBitmap == null) {
+                val shareBmp = pair?.first
+                finalBitmap = shareBmp
+                if (shareBmp == null) {
                     showToast("渲染分享图失败")
                     return@launch
                 }
                 val baseName = state.sourceFileName.substringBeforeLast('.')
-                val result = PhotoShareHelper.shareBitmap(getApplication(), finalBitmap, "${baseName}_PENTAX.jpg")
+                val result = PhotoShareHelper.shareBitmap(getApplication(), shareBmp, "${baseName}_PENTAX.jpg")
                 result.onFailure { showToast("调起分享失败: ${it.localizedMessage}") }
             } catch (t: Throwable) {
                 showToast("分享失败: ${t.localizedMessage ?: t.javaClass.simpleName}")
             } finally {
-                if (finalBitmap != null && finalBitmap !== state.sourceBitmap && !finalBitmap.isRecycled) {
-                    finalBitmap.recycle()
+                val fBmp = finalBitmap
+                if (fBmp != null && fBmp !== state.sourceBitmap && !fBmp.isRecycled) {
+                    fBmp.recycle()
                 }
                 _watermarkState.update { it.copy(isSharing = false) }
             }
@@ -3533,6 +3591,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopLiveView()
         stopCameraSyncWatcher(disableTether = true)
         releaseSpektraSession()
+        cleanRawStudioCache(keepFilePath = null)
         repo.wifiBinder.releaseBinding(silent = true)
     }
 }
