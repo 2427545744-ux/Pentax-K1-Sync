@@ -1,4 +1,4 @@
-# Pentax K-1 Sync v7.4.0
+# Pentax K-1 Sync v7.4.3
 
 专为 **PENTAX K-1（一代）** 打造的原生 Android 图传、无线遥控与 SpektraLab 81 波长物理暗房客户端（Kotlin + Jetpack Compose + C++20 JNI + Vulkan Compute + LibRaw 0.22.2）。
 
@@ -95,3 +95,19 @@
 - **底层生命周期、性能与手感全面加固**：
   - `PS混色` 拆分为 4 个防误触二级分页（`预设/基础`、`色调曲线`、`三区/混色`、`HSL/质感`）；
   - 监听 `ON_STOP / ON_RESUME` 切后台自动停 Live View 与空闲轮询；`WifiNetworkBinder` 加 `AtomicBoolean` 单次回调防重入；`TransferForegroundService` 适配 Android 12+ `stopService`；缩略图磁盘缓存自动上限清理；`CubeLutEngine` 升级 4 核并行；修复 K-1 `WBMode` 大小写、慢门分数显示、EXIF 分数解析、本地原文件名保留、大图/对比页实时星标同步，以及完整多级返回键导航栈。
+
+## v7.4.1 极速传图引擎重构（专治 K-1 无线传输 200KB/s 慢速瓶颈）
+- **裸 TCP 极速直连下载器 (`downloadPhotoFastRawTcp`)**：绕过 OkHttp 默认连接池与 Gzip 协商，直接配置 `512KB SO_RCVBUF` 接收窗口 + `TCP_NODELAY` + `128KB` 零拷贝定长直读，并在抓包日志精确打印每张图真实 `MB/s`。
+- **Android `WifiLock` 高性能射频锁 + `PARTIAL_WAKE_LOCK`**：下载期间主动锁定 `WIFI_MODE_FULL_LOW_LATENCY / WIFI_MODE_FULL_HIGH_PERF`，防止安卓对无外网相机热点触发 Wi-Fi PSM 休眠降速。
+- **传图独占通道防抢占**：下载原图/RAW 或批量暗房期间自动暂停 `/v1/changes` WebSocket（消除 15s 心跳与 4s 重连打断）、排空闲置连接池、暂停图库网络缩略图请求，并默认开启「极速传图 · 独占 Wi-Fi 射频」（下载时临时暂停 5G 保活防天线时间片抢占，传完秒恢复双网并发）。
+- **下载与落盘/水印异步流水线**：下载完成后交由后台异步协程写入相册与渲染水印，Wi-Fi 立刻开拉下一张照片不再空等。
+
+## v7.4.2 根治 36.4MP 成片导出闪退（全管线行带流式超低内存重构）
+- **`PostDarkroomAdjuster` & `CubeLutEngine` 全面改为 256 行水平条带流式并行**：36.4MP（7360×4912）全分辨率导出时，Java 堆峰值从 **289 MB 骤降至 ≤15 MB**（降幅达 19～36 倍），彻底根治 `OutOfMemoryError` 闪退。
+- **`spektra_jni.cpp` 36MP JPG 分带流式直读**：`nativeRenderBitmapFullTiled` 改为逐带转换锁定像素（每带 ≤66 MB），省去 **368 MB** 原生整图浮点缓冲。
+- **`MediaStoreSaver` 64KB 零拷贝流式落盘 + `android:largeHeap="true"`**：不再将 30MB JPEG 整文件 `readBytes()` 读回堆内存；水印阴影与发光日期模糊半径针对 36MP 做 Skia 安全限幅。
+- **导出/分享全链路异常兜底与内存释放**：导出前主动释放实时预览 Vulkan 会话；全链路加 `try/catch(OutOfMemoryError/Throwable)` 兜底，遇到极端低内存自动降级 4096px 保护导出，绝不闪退。
+
+## v7.4.3 JPG 高光通透度优化 & 负片底片直扫开关
+- **JPG 高光区保色相逆色调映射（`spektra_jni.cpp`）**：针对 sRGB JPG 输入，仅在 `sRGB > 195`（线性亮度 `> 0.55`）的高光区域施加 C1 平滑单调高光余量扩展（最高 `+1.68 EV`），暗部、中间调与人像肤色 100% 零改动、RGB 色相比例严格不变；14-bit RAW 完全不经过此转换，保持原始线性传感器数据。
+- **新增「底片直扫 (通透)」一键切换（`WatermarkScreen.kt`）**：为彩色与黑白负片开放 `底片直扫` 选项，一键绕过光学相纸 D-min 压白，呈现如哈苏/诺日士扫描仪般明亮通透的高光层次。
