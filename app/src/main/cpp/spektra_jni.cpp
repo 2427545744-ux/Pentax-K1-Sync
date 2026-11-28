@@ -29,6 +29,12 @@ std::mutex g_engine_mutex;
 spk_engine* g_engine = nullptr;
 std::string g_last_error;
 
+struct DisplayToneCal {
+    float gain = 1.0f;
+    float gamma = 1.0f;
+    bool active() const { return gain > 1.002f || gamma < 0.998f; }
+};
+
 struct SessionHolder {
     spk_session* session = nullptr;
     uint32_t width = 0;
@@ -36,6 +42,11 @@ struct SessionHolder {
     bool is_raw = false;
     bool is_half_size = false;
     std::string camera_model;
+    float ref_p50 = 0.46f;
+    float ref_p98 = 0.94f;
+    bool has_ref_stats = false;
+    bool cal_valid = false;
+    DisplayToneCal cached_cal{};
 };
 
 std::string jstring_to_utf8(JNIEnv* env, jstring s) {
@@ -67,41 +78,152 @@ inline uint8_t linear_to_srgb8(float v) {
     return static_cast<uint8_t>(std::clamp(q, 0, 255));
 }
 
-inline float srgb8_to_linear(uint8_t u) {
-    const float s = static_cast<float>(u) * (1.0f / 255.0f);
-    return (s <= 0.04045f) ? (s / 12.92f) : std::pow((s + 0.055f) / 1.055f, 2.4f);
+inline float smoothstep_f(float e0, float e1, float x) {
+    const float t = std::clamp((x - e0) / (e1 - e0), 0.0f, 1.0f);
+    return t * t * (3.0f - 2.0f * t);
 }
 
-/**
- * Highlight-only, hue-preserving inverse tone mapping for sRGB JPG inputs into SpektraLab:
- * - Shadows, midtones, and skin tones (linear lum <= 0.55, i.e. sRGB <= 195/255): 100% untouched (gain = 1.0).
- * - Upper highlights (linear lum 0.55..1.0, i.e. sRGB 195..255): smooth C1 monotonic shoulder expansion up to
- *   3.2x (+1.68 EV) using a shared per-pixel luminance scalar so RGB chromaticity & hue stay 100% invariant.
- * - 14-bit RAW inputs never call this function and retain native sensor linearity untouched.
- */
-inline void convert_srgb8_with_highlight_headroom(uint8_t r8, uint8_t g8, uint8_t b8, float* dst3) {
-    static const std::array<float, 256> kSrgbLut = []() {
-        std::array<float, 256> tbl{};
-        for (int i = 0; i < 256; ++i) {
-            tbl[static_cast<size_t>(i)] = srgb8_to_linear(static_cast<uint8_t>(i));
-        }
-        return tbl;
-    }();
-    float r = kSrgbLut[r8];
-    float g = kSrgbLut[g8];
-    float b = kSrgbLut[b8];
-    const float lum = 0.2126f * r + 0.7152f * g + 0.0722f * b;
-    constexpr float kKnee = 0.55f;
-    if (lum > kKnee) {
-        const float t = std::clamp((lum - kKnee) / (1.0f - kKnee), 0.0f, 1.0f);
-        const float gain = 1.0f + 2.2f * std::pow(t, 2.2f);
-        r *= gain;
-        g *= gain;
-        b *= gain;
+inline float soft_shoulder_f(float x) {
+    if (x <= 0.88f) return x;
+    const float over = x - 0.88f;
+    return 0.88f + 0.12f * (over / (over + 0.12f));
+}
+
+inline float eval_display_cal_luma(float l, const DisplayToneCal& cal) {
+    if (l <= 1e-6f) return 0.0f;
+    float v = soft_shoulder_f(l * cal.gain);
+    if (cal.gamma < 0.999f) {
+        const float wMid = smoothstep_f(0.02f, 0.18f, v);
+        const float lifted = std::pow(std::clamp(v, 0.0f, 1.0f), cal.gamma);
+        v = v * (1.0f - wMid) + lifted * wMid;
     }
-    dst3[0] = r;
-    dst3[1] = g;
-    dst3[2] = b;
+    return std::clamp(v, 0.0f, 1.0f);
+}
+
+void compute_hist_percentiles(const std::array<uint64_t, 256>& hist, uint64_t total, float& outP50, float& outP98) {
+    if (total == 0) { outP50 = 0.45f; outP98 = 0.92f; return; }
+    const uint64_t t50 = (total * 50ULL) / 100ULL;
+    const uint64_t t98 = (total * 98ULL) / 100ULL;
+    uint64_t acc = 0;
+    int b50 = 115, b98 = 235;
+    bool got50 = false, got98 = false;
+    for (int i = 0; i < 256; ++i) {
+        acc += hist[static_cast<size_t>(i)];
+        if (!got50 && acc >= t50) { b50 = i; got50 = true; }
+        if (!got98 && acc >= t98) { b98 = i; got98 = true; break; }
+    }
+    outP50 = static_cast<float>(b50) / 255.0f;
+    outP98 = static_cast<float>(b98) / 255.0f;
+}
+
+void compute_rgba8_luma_stats(
+    const uint8_t* base, uint32_t w, uint32_t h, uint32_t stride,
+    float& outP50, float& outP98
+) {
+    std::array<uint64_t, 256> hist{};
+    uint64_t total = 0;
+    const uint32_t stepY = std::max(1u, h / 256u);
+    const uint32_t stepX = std::max(1u, w / 256u);
+    for (uint32_t y = 0; y < h; y += stepY) {
+        const uint8_t* row = base + static_cast<size_t>(y) * stride;
+        for (uint32_t x = 0; x < w; x += stepX) {
+            const uint32_t lum = (77u * row[4u * x] + 150u * row[4u * x + 1] + 29u * row[4u * x + 2]) >> 8;
+            hist[std::min(255u, lum)]++;
+            total++;
+        }
+    }
+    compute_hist_percentiles(hist, total, outP50, outP98);
+}
+
+void compute_rgba16_luma_stats(
+    const uint16_t* rgba16, uint32_t w, uint32_t h, uint32_t stridePx,
+    float& outP50, float& outP98
+) {
+    std::array<uint64_t, 256> hist{};
+    uint64_t total = 0;
+    const uint32_t stepY = std::max(1u, h / 256u);
+    const uint32_t stepX = std::max(1u, w / 256u);
+    for (uint32_t y = 0; y < h; y += stepY) {
+        const uint16_t* row = rgba16 + static_cast<size_t>(y) * stridePx * 4u;
+        for (uint32_t x = 0; x < w; x += stepX) {
+            const uint32_t r8 = row[4u * x] >> 8;
+            const uint32_t g8 = row[4u * x + 1] >> 8;
+            const uint32_t b8 = row[4u * x + 2] >> 8;
+            const uint32_t lum = (77u * r8 + 150u * g8 + 29u * b8) >> 8;
+            hist[std::min(255u, lum)]++;
+            total++;
+        }
+    }
+    compute_hist_percentiles(hist, total, outP50, outP98);
+}
+
+DisplayToneCal solve_display_tone_cal(
+    bool hasRefStats, float refP50, float refP98,
+    float outP50, float outP98
+) {
+    DisplayToneCal cal{};
+    if (outP98 <= 0.16f) return cal;
+
+    float targetP98 = hasRefStats
+        ? std::clamp(refP98, 0.42f, 0.96f)
+        : (outP98 > 0.45f ? 0.94f : std::min(0.90f, outP98 * 1.15f));
+
+    if (outP98 < targetP98) {
+        cal.gain = std::clamp(targetP98 / outP98, 1.0f, 1.38f);
+    }
+
+    const float midAfterGain = soft_shoulder_f(outP50 * cal.gain);
+    float targetP50 = hasRefStats
+        ? std::clamp(refP50, 0.14f, 0.62f)
+        : (outP50 > 0.16f ? 0.45f : outP50);
+
+    if (midAfterGain > 0.06f && midAfterGain < targetP50 * 0.97f && targetP50 < 0.95f) {
+        const float rawGamma = std::log(targetP50) / std::log(midAfterGain);
+        cal.gamma = std::clamp(rawGamma, 0.76f, 1.0f);
+    }
+    return cal;
+}
+
+inline void write_rgba16_row_to_argb8888(
+    const uint16_t* srcRow, uint8_t* dstRow, uint32_t width, const DisplayToneCal& cal
+) {
+    if (!cal.active()) {
+        for (uint32_t x = 0; x < width; ++x) {
+            dstRow[4u * x]     = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x])     * 255u + 32767u) / 65535u);
+            dstRow[4u * x + 1] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 1]) * 255u + 32767u) / 65535u);
+            dstRow[4u * x + 2] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 2]) * 255u + 32767u) / 65535u);
+            dstRow[4u * x + 3] = 255u;
+        }
+        return;
+    }
+
+    constexpr float inv65535 = 1.0f / 65535.0f;
+    for (uint32_t x = 0; x < width; ++x) {
+        const float r = static_cast<float>(srcRow[4u * x])     * inv65535;
+        const float g = static_cast<float>(srcRow[4u * x + 1]) * inv65535;
+        const float b = static_cast<float>(srcRow[4u * x + 2]) * inv65535;
+        const float lum = 0.299f * r + 0.587f * g + 0.114f * b;
+        float ro = r, go = g, bo = b;
+        if (lum > 1e-5f) {
+            const float targetL = eval_display_cal_luma(lum, cal);
+            const float scale = targetL / lum;
+            ro = r * scale;
+            go = g * scale;
+            bo = b * scale;
+            const float maxC = std::max(ro, std::max(go, bo));
+            if (maxC > 1.0f) {
+                const float denom = std::max(1e-5f, maxC - targetL);
+                const float blend = std::clamp((1.0f - targetL) / denom, 0.0f, 1.0f);
+                ro = targetL + (ro - targetL) * blend;
+                go = targetL + (go - targetL) * blend;
+                bo = targetL + (bo - targetL) * blend;
+            }
+        }
+        dstRow[4u * x]     = static_cast<uint8_t>(std::clamp(static_cast<int>(ro * 255.0f + 0.5f), 0, 255));
+        dstRow[4u * x + 1] = static_cast<uint8_t>(std::clamp(static_cast<int>(go * 255.0f + 0.5f), 0, 255));
+        dstRow[4u * x + 2] = static_cast<uint8_t>(std::clamp(static_cast<int>(bo * 255.0f + 0.5f), 0, 255));
+        dstRow[4u * x + 3] = 255u;
+    }
 }
 
 spk::Json build_open_params_obj(const std::string& base_json, bool is_linear_prophoto) {
@@ -117,9 +239,8 @@ spk::Json build_open_params_obj(const std::string& base_json, bool is_linear_pro
         obj.set("input_color_space", spk::Json(std::string("ProPhoto RGB")));
         obj.set("input_cctf_decoding", spk::Json(false));
     } else {
-        // Already decoded via exact sRGB EOTF + highlight-only headroom expansion above sRGB 195
         obj.set("input_color_space", spk::Json(std::string("sRGB")));
-        obj.set("input_cctf_decoding", spk::Json(false));
+        obj.set("input_cctf_decoding", spk::Json(true));
     }
     obj.set("output_color_space", spk::Json(std::string("sRGB")));
     obj.set("output_cctf_encoding", spk::Json(true));
@@ -244,7 +365,11 @@ jobject render_full_rgb_tiled(
     uint32_t W,
     uint32_t H,
     bool isLinearProphoto,
-    const std::string& paramsIn
+    const std::string& paramsIn,
+    bool displayCalibrate,
+    bool hasRefStats = false,
+    float refP50 = 0.46f,
+    float refP98 = 0.94f
 ) {
     if (!g_engine || !fullRgb || W == 0 || H == 0) {
         g_last_error = "暗房引擎或输入图像无效";
@@ -290,24 +415,26 @@ jobject render_full_rgb_tiled(
         }
 
         const uint32_t stridePx = res.row_stride_px >= W ? res.row_stride_px : W;
+        DisplayToneCal smallCal{};
+        if (displayCalibrate) {
+            float op50 = 0.45f, op98 = 0.92f;
+            compute_rgba16_luma_stats(res.rgba16, W, H, stridePx, op50, op98);
+            smallCal = solve_display_tone_cal(hasRefStats, refP50, refP98, op50, op98);
+        }
         auto* dstBase = static_cast<uint8_t*>(dstPixels);
         for (uint32_t y = 0; y < H; ++y) {
             const uint16_t* srcRow = res.rgba16 + static_cast<size_t>(y) * stridePx * 4u;
             uint8_t* dstRow = dstBase + static_cast<size_t>(y) * info.stride;
-            for (uint32_t x = 0; x < W; ++x) {
-                dstRow[4u * x]     = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x])     * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 1] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 1]) * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 2] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 2]) * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 3] = 255u;
-            }
+            write_rgba16_row_to_argb8888(srcRow, dstRow, W, smallCal);
         }
         AndroidBitmap_unlockPixels(env, outBmp);
         spk_result_free(&res); spk_session_release(sess); spk_trim_pool(g_engine, 0);
         return outBmp;
     }
 
-    // Step 1: Lock global auto-exposure on a fast 1024px whole-frame proxy so every band matches identically
-    if (baseParams.at("auto_exposure").as_bool(false)) {
+    DisplayToneCal globalCal{};
+    const bool needAutoExp = baseParams.at("auto_exposure").as_bool(false);
+    if (needAutoExp || displayCalibrate) {
         std::vector<float> calRgb;
         uint32_t calW = 0, calH = 0;
         downsample_rgb(fullRgb, W, H, 1024u, calRgb, calW, calH);
@@ -320,21 +447,33 @@ jobject render_full_rgb_tiled(
         spk_session* calSess = spk_open(g_engine, &calImg, calJson.c_str(), &openReply);
         if (openReply) spk_string_free(openReply);
         if (calSess) {
-            char* solveReply = nullptr;
-            if (spk_solve(calSess, "exposure", &solveReply) == SPK_OK && solveReply) {
-                spk::Json parsed;
-                std::string perr;
-                if (spk::Json::parse(solveReply, parsed, perr) && parsed.is_object()) {
-                    const spk::Json& sp = parsed.has("solved_params") ? parsed.at("solved_params") : parsed;
-                    if (sp.at("exposure_compensation_ev").is_number()) {
-                        const double solvedEv = sp.at("exposure_compensation_ev").as_double(0.0);
-                        const double userEv = baseParams.at("exposure_compensation_ev").as_double(0.0);
-                        baseParams.set("auto_exposure", spk::Json(false));
-                        baseParams.set("exposure_compensation_ev", spk::Json(std::clamp(solvedEv + userEv, -8.0, 8.0)));
+            if (needAutoExp) {
+                char* solveReply = nullptr;
+                if (spk_solve(calSess, "exposure", &solveReply) == SPK_OK && solveReply) {
+                    spk::Json parsed;
+                    std::string perr;
+                    if (spk::Json::parse(solveReply, parsed, perr) && parsed.is_object()) {
+                        const spk::Json& sp = parsed.has("solved_params") ? parsed.at("solved_params") : parsed;
+                        if (sp.at("exposure_compensation_ev").is_number()) {
+                            const double solvedEv = sp.at("exposure_compensation_ev").as_double(0.0);
+                            const double userEv = baseParams.at("exposure_compensation_ev").as_double(0.0);
+                            baseParams.set("auto_exposure", spk::Json(false));
+                            baseParams.set("exposure_compensation_ev", spk::Json(std::clamp(solvedEv + userEv, -8.0, 8.0)));
+                        }
                     }
                 }
+                if (solveReply) spk_string_free(solveReply);
             }
-            if (solveReply) spk_string_free(solveReply);
+            if (displayCalibrate) {
+                spk_result proxyRes{};
+                if (spk_render(calSess, "live", &proxyRes) == SPK_OK && proxyRes.rgba16 && proxyRes.width > 0 && proxyRes.height > 0) {
+                    const uint32_t pStride = proxyRes.row_stride_px >= proxyRes.width ? proxyRes.row_stride_px : proxyRes.width;
+                    float op50 = 0.45f, op98 = 0.92f;
+                    compute_rgba16_luma_stats(proxyRes.rgba16, proxyRes.width, proxyRes.height, pStride, op50, op98);
+                    globalCal = solve_display_tone_cal(hasRefStats, refP50, refP98, op50, op98);
+                }
+                spk_result_free(&proxyRes);
+            }
             spk_session_release(calSess);
             spk_trim_pool(g_engine, 0);
         }
@@ -415,12 +554,7 @@ jobject render_full_rgb_tiled(
         for (uint32_t r = 0; r < copyRows; ++r) {
             const uint16_t* srcRow = res.rgba16 + static_cast<size_t>(localStart + r) * stridePx * 4u;
             uint8_t* dstRow = dstBase + static_cast<size_t>(y0 + r) * info.stride;
-            for (uint32_t x = 0; x < W; ++x) {
-                dstRow[4u * x]     = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x])     * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 1] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 1]) * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 2] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 2]) * 255u + 32767u) / 65535u);
-                dstRow[4u * x + 3] = 255u;
-            }
+            write_rgba16_row_to_argb8888(srcRow, dstRow, W, globalCal);
         }
 
         spk_result_free(&res);
@@ -591,12 +725,17 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeOpenBitmap(
     const uint32_t h = info.height;
     std::vector<float> rgb(static_cast<size_t>(w) * static_cast<size_t>(h) * 3u);
 
+    constexpr float inv255 = 1.0f / 255.0f;
     const auto* base = static_cast<const uint8_t*>(pixels);
+    float refP50 = 0.46f, refP98 = 0.94f;
+    compute_rgba8_luma_stats(base, w, h, info.stride, refP50, refP98);
     for (uint32_t y = 0; y < h; ++y) {
         const uint8_t* row = base + static_cast<size_t>(y) * info.stride;
         float* dst = rgb.data() + static_cast<size_t>(y) * w * 3u;
         for (uint32_t x = 0; x < w; ++x) {
-            convert_srgb8_with_highlight_headroom(row[4u * x], row[4u * x + 1], row[4u * x + 2], dst + 3u * x);
+            dst[3u * x]     = static_cast<float>(row[4u * x])     * inv255;
+            dst[3u * x + 1] = static_cast<float>(row[4u * x + 1]) * inv255;
+            dst[3u * x + 2] = static_cast<float>(row[4u * x + 2]) * inv255;
         }
     }
     AndroidBitmap_unlockPixels(env, jBitmap);
@@ -618,12 +757,13 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeOpenBitmap(
 
     auto* holder = new SessionHolder();
     holder->session = sess; holder->width = w; holder->height = h; holder->is_raw = false;
+    holder->ref_p50 = refP50; holder->ref_p98 = refP98; holder->has_ref_stats = true;
     return reinterpret_cast<jlong>(holder);
 }
 
 JNIEXPORT jobject JNICALL
 Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
-    JNIEnv* env, jobject /*thiz*/, jobject jBitmap, jstring jParamsJson
+    JNIEnv* env, jobject /*thiz*/, jobject jBitmap, jstring jParamsJson, jboolean displayCalibrate
 ) {
     std::lock_guard<std::mutex> lock(g_engine_mutex);
     g_last_error.clear();
@@ -649,28 +789,32 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
         return nullptr;
     }
 
-    // Small/medium image (<= 5.5MP): direct single-pass render
+    constexpr float inv255 = 1.0f / 255.0f;
+    const auto* srcBase = static_cast<const uint8_t*>(srcPixels);
+    float refP50 = 0.46f, refP98 = 0.94f;
+    compute_rgba8_luma_stats(srcBase, W, H, srcInfo.stride, refP50, refP98);
+
     if (totalPixels <= kMaxBandPixels) {
         std::vector<float> rgb(static_cast<size_t>(W) * static_cast<size_t>(H) * 3u);
-        const auto* base = static_cast<const uint8_t*>(srcPixels);
         for (uint32_t y = 0; y < H; ++y) {
-            const uint8_t* row = base + static_cast<size_t>(y) * srcInfo.stride;
+            const uint8_t* row = srcBase + static_cast<size_t>(y) * srcInfo.stride;
             float* dst = rgb.data() + static_cast<size_t>(y) * W * 3u;
             for (uint32_t x = 0; x < W; ++x) {
-                convert_srgb8_with_highlight_headroom(row[4u * x], row[4u * x + 1], row[4u * x + 2], dst + 3u * x);
+                dst[3u * x]     = static_cast<float>(row[4u * x])     * inv255;
+                dst[3u * x + 1] = static_cast<float>(row[4u * x + 1]) * inv255;
+                dst[3u * x + 2] = static_cast<float>(row[4u * x + 2]) * inv255;
             }
         }
         AndroidBitmap_unlockPixels(env, jBitmap);
-        return render_full_rgb_tiled(env, rgb.data(), W, H, false, paramsIn);
+        return render_full_rgb_tiled(env, rgb.data(), W, H, false, paramsIn, displayCalibrate == JNI_TRUE, true, refP50, refP98);
     }
 
-    // Streaming overlapped-band mode for large 12MP–36.4MP+ Bitmaps:
-    // NEVER allocates a 434 MB full-frame float vector — only converts one <= 66 MB band at a time!
     spk::Json baseParams = build_open_params_obj(paramsIn, false);
-    const auto* srcBase = static_cast<const uint8_t*>(srcPixels);
+    DisplayToneCal globalCal{};
+    const bool needAutoExp = baseParams.at("auto_exposure").as_bool(false);
+    const bool wantCal = (displayCalibrate == JNI_TRUE);
 
-    // Step 1: Lock global auto-exposure on a fast 1024px whole-frame proxy directly from srcPixels
-    if (baseParams.at("auto_exposure").as_bool(false)) {
+    if (needAutoExp || wantCal) {
         const uint32_t longest = std::max(W, H);
         const double sc = (longest > 1024u) ? (1024.0 / double(longest)) : 1.0;
         const uint32_t calW = std::max(16u, static_cast<uint32_t>(std::lround(W * sc)));
@@ -682,7 +826,9 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
             float* dRow = calRgb.data() + static_cast<size_t>(y) * calW * 3u;
             for (uint32_t x = 0; x < calW; ++x) {
                 const uint32_t sx = std::min(W - 1u, static_cast<uint32_t>((uint64_t(x) * W) / calW));
-                convert_srgb8_with_highlight_headroom(sRow[4u * sx], sRow[4u * sx + 1], sRow[4u * sx + 2], dRow + 3u * x);
+                dRow[3u * x]     = static_cast<float>(sRow[4u * sx])     * inv255;
+                dRow[3u * x + 1] = static_cast<float>(sRow[4u * sx + 1]) * inv255;
+                dRow[3u * x + 2] = static_cast<float>(sRow[4u * sx + 2]) * inv255;
             }
         }
         spk_image calImg{};
@@ -692,21 +838,33 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
         spk_session* calSess = spk_open(g_engine, &calImg, calJson.c_str(), &openReply);
         if (openReply) spk_string_free(openReply);
         if (calSess) {
-            char* solveReply = nullptr;
-            if (spk_solve(calSess, "exposure", &solveReply) == SPK_OK && solveReply) {
-                spk::Json parsed;
-                std::string perr;
-                if (spk::Json::parse(solveReply, parsed, perr) && parsed.is_object()) {
-                    const spk::Json& sp = parsed.has("solved_params") ? parsed.at("solved_params") : parsed;
-                    if (sp.at("exposure_compensation_ev").is_number()) {
-                        const double solvedEv = sp.at("exposure_compensation_ev").as_double(0.0);
-                        const double userEv = baseParams.at("exposure_compensation_ev").as_double(0.0);
-                        baseParams.set("auto_exposure", spk::Json(false));
-                        baseParams.set("exposure_compensation_ev", spk::Json(std::clamp(solvedEv + userEv, -8.0, 8.0)));
+            if (needAutoExp) {
+                char* solveReply = nullptr;
+                if (spk_solve(calSess, "exposure", &solveReply) == SPK_OK && solveReply) {
+                    spk::Json parsed;
+                    std::string perr;
+                    if (spk::Json::parse(solveReply, parsed, perr) && parsed.is_object()) {
+                        const spk::Json& sp = parsed.has("solved_params") ? parsed.at("solved_params") : parsed;
+                        if (sp.at("exposure_compensation_ev").is_number()) {
+                            const double solvedEv = sp.at("exposure_compensation_ev").as_double(0.0);
+                            const double userEv = baseParams.at("exposure_compensation_ev").as_double(0.0);
+                            baseParams.set("auto_exposure", spk::Json(false));
+                            baseParams.set("exposure_compensation_ev", spk::Json(std::clamp(solvedEv + userEv, -8.0, 8.0)));
+                        }
                     }
                 }
+                if (solveReply) spk_string_free(solveReply);
             }
-            if (solveReply) spk_string_free(solveReply);
+            if (wantCal) {
+                spk_result proxyRes{};
+                if (spk_render(calSess, "live", &proxyRes) == SPK_OK && proxyRes.rgba16 && proxyRes.width > 0 && proxyRes.height > 0) {
+                    const uint32_t pStride = proxyRes.row_stride_px >= proxyRes.width ? proxyRes.row_stride_px : proxyRes.width;
+                    float op50 = 0.45f, op98 = 0.92f;
+                    compute_rgba16_luma_stats(proxyRes.rgba16, proxyRes.width, proxyRes.height, pStride, op50, op98);
+                    globalCal = solve_display_tone_cal(true, refP50, refP98, op50, op98);
+                }
+                spk_result_free(&proxyRes);
+            }
             spk_session_release(calSess);
             spk_trim_pool(g_engine, 0);
         }
@@ -754,7 +912,9 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
             const uint8_t* sRow = srcBase + static_cast<size_t>(srcY0 + r) * srcInfo.stride;
             float* dRow = bandRgb.data() + static_cast<size_t>(r) * W * 3u;
             for (uint32_t x = 0; x < W; ++x) {
-                convert_srgb8_with_highlight_headroom(sRow[4u * x], sRow[4u * x + 1], sRow[4u * x + 2], dRow + 3u * x);
+                dRow[3u * x]     = static_cast<float>(sRow[4u * x])     * inv255;
+                dRow[3u * x + 1] = static_cast<float>(sRow[4u * x + 1]) * inv255;
+                dRow[3u * x + 2] = static_cast<float>(sRow[4u * x + 2]) * inv255;
             }
         }
 
@@ -793,12 +953,7 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderBitmapFullTiled(
         for (uint32_t r = 0; r < copyRows; ++r) {
             const uint16_t* sRow = res.rgba16 + static_cast<size_t>(localStart + r) * stridePx * 4u;
             uint8_t* dRow = dstBase + static_cast<size_t>(y0 + r) * dstInfo.stride;
-            for (uint32_t x = 0; x < W; ++x) {
-                dRow[4u * x]     = static_cast<uint8_t>((static_cast<uint32_t>(sRow[4u * x])     * 255u + 32767u) / 65535u);
-                dRow[4u * x + 1] = static_cast<uint8_t>((static_cast<uint32_t>(sRow[4u * x + 1]) * 255u + 32767u) / 65535u);
-                dRow[4u * x + 2] = static_cast<uint8_t>((static_cast<uint32_t>(sRow[4u * x + 2]) * 255u + 32767u) / 65535u);
-                dRow[4u * x + 3] = 255u;
-            }
+            write_rgba16_row_to_argb8888(sRow, dRow, W, globalCal);
         }
 
         spk_result_free(&res);
@@ -819,7 +974,8 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderRawFullTiled(
     jboolean useCustomWb,
     jdouble tempKelvin,
     jdouble tint,
-    jstring jParamsJson
+    jstring jParamsJson,
+    jboolean displayCalibrate
 ) {
     std::lock_guard<std::mutex> lock(g_engine_mutex);
     g_last_error.clear();
@@ -851,7 +1007,7 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderRawFullTiled(
         return nullptr;
     }
 
-    return render_full_rgb_tiled(env, decoded.rgb.data(), decoded.width, decoded.height, true, paramsIn);
+    return render_full_rgb_tiled(env, decoded.rgb.data(), decoded.width, decoded.height, true, paramsIn, displayCalibrate == JNI_TRUE);
 }
 
 JNIEXPORT jstring JNICALL
@@ -920,7 +1076,7 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeSceneLatitude(
 
 JNIEXPORT jobject JNICALL
 Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderToBitmap(
-    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring jTier, jboolean reprintOnly
+    JNIEnv* env, jobject /*thiz*/, jlong handle, jstring jTier, jboolean reprintOnly, jboolean displayCalibrate, jboolean resetCal
 ) {
     std::lock_guard<std::mutex> lock(g_engine_mutex);
     g_last_error.clear();
@@ -953,16 +1109,23 @@ Java_com_pentax_k1sync_spektra_SpektraNativeBridge_nativeRenderToBitmap(
     }
 
     const uint32_t stridePx = res.row_stride_px >= res.width ? res.row_stride_px : res.width;
+    DisplayToneCal activeCal{};
+    if (displayCalibrate == JNI_TRUE) {
+        if (!holder->cal_valid || resetCal == JNI_TRUE) {
+            float op50 = 0.45f, op98 = 0.92f;
+            compute_rgba16_luma_stats(res.rgba16, res.width, res.height, stridePx, op50, op98);
+            holder->cached_cal = solve_display_tone_cal(holder->has_ref_stats, holder->ref_p50, holder->ref_p98, op50, op98);
+            holder->cal_valid = true;
+        }
+        activeCal = holder->cached_cal;
+    } else if (resetCal == JNI_TRUE) {
+        holder->cal_valid = false;
+    }
     auto* dstBase = static_cast<uint8_t*>(dstPixels);
     for (uint32_t y = 0; y < res.height; ++y) {
         const uint16_t* srcRow = res.rgba16 + static_cast<size_t>(y) * stridePx * 4u;
         uint8_t* dstRow = dstBase + static_cast<size_t>(y) * info.stride;
-        for (uint32_t x = 0; x < res.width; ++x) {
-            dstRow[4u * x]     = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x])     * 255u + 32767u) / 65535u);
-            dstRow[4u * x + 1] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 1]) * 255u + 32767u) / 65535u);
-            dstRow[4u * x + 2] = static_cast<uint8_t>((static_cast<uint32_t>(srcRow[4u * x + 2]) * 255u + 32767u) / 65535u);
-            dstRow[4u * x + 3] = 255u;
-        }
+        write_rgba16_row_to_argb8888(srcRow, dstRow, res.width, activeCal);
     }
 
     AndroidBitmap_unlockPixels(env, outBmp);

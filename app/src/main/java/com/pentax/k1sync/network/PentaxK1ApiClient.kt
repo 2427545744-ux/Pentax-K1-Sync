@@ -319,6 +319,34 @@ class PentaxK1ApiClient(
         }
     }
 
+    suspend fun deletePhoto(photo: CameraPhoto): Result<Unit> = withContext(Dispatchers.IO) {
+        runCatching {
+            val path = "/v1/photos/${photo.dir}/${photo.file}?storage=${photo.slot.apiName}"
+            val req = Request.Builder().url("$baseUrl$path").delete().build()
+            val t0 = System.currentTimeMillis()
+            buildClient(10L, 5L).newCall(req).execute().use { resp ->
+                val text = resp.body?.string().orEmpty()
+                val elapsed = System.currentTimeMillis() - t0
+                ApiDebugLogger.record("DELETE", path, resp.code, elapsed, text.ifBlank { "(empty)" })
+                if (!resp.isSuccessful) {
+                    if (resp.code == 404 || resp.code == 405 || resp.code == 501) {
+                        error("K-1 固件未开放 Wi-Fi 远程删卡 (HTTP ${resp.code})，可使用「标废隐藏」快速筛片")
+                    }
+                    error("删除失败: HTTP ${resp.code}")
+                }
+                val trimmed = text.trim()
+                if (trimmed.startsWith("{")) {
+                    val json = JSONObject(trimmed)
+                    val errCode = json.optInt("errCode", 200)
+                    if (errCode != 200) {
+                        val msg = json.optString("errMsg", "errCode=$errCode")
+                        error("机身拒绝删除: $msg")
+                    }
+                }
+            }
+        }
+    }
+
     suspend fun downloadPhotoBytes(
         photo: CameraPhoto,
         size: String,

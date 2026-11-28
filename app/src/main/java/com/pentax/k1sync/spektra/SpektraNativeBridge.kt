@@ -36,19 +36,20 @@ object SpektraNativeBridge {
         paramsJson: String
     ): Long
     external fun nativeOpenBitmap(bitmap: Bitmap, paramsJson: String): Long
-    external fun nativeRenderBitmapFullTiled(bitmap: Bitmap, paramsJson: String): Bitmap?
+    external fun nativeRenderBitmapFullTiled(bitmap: Bitmap, paramsJson: String, displayCalibrate: Boolean): Bitmap?
     external fun nativeRenderRawFullTiled(
         filePath: String,
         useHeadroom: Boolean,
         useCustomWb: Boolean,
         tempKelvin: Double,
         tint: Double,
-        paramsJson: String
+        paramsJson: String,
+        displayCalibrate: Boolean
     ): Bitmap?
     external fun nativeSetParams(handle: Long, paramsJson: String): String
     external fun nativeSolve(handle: Long, target: String): String
     external fun nativeSceneLatitude(handle: Long, requestJson: String?): String
-    external fun nativeRenderToBitmap(handle: Long, tier: String, reprintOnly: Boolean): Bitmap?
+    external fun nativeRenderToBitmap(handle: Long, tier: String, reprintOnly: Boolean, displayCalibrate: Boolean, resetCal: Boolean): Bitmap?
     external fun nativeCloseSession(handle: Long)
     external fun nativeDecodeRawPreview(filePath: String, maxLongEdge: Int): Bitmap?
 

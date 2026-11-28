@@ -86,10 +86,23 @@ class CameraRepository(
         val bytes = if (isMockMode) {
             mockRepo.renderMockPhotoBytes(photo, 360, 240)
         } else {
-            apiClient.downloadPhotoBytes(photo, "thumb").getOrNull()
+            apiClient.downloadPhotoBytes(photo, "thumb").getOrNull()?.takeIf { it.size > 128 }
+                ?: if (photo.isRaw) {
+                    apiClient.downloadPhotoBytes(photo, "view").getOrNull()?.takeIf { it.size > 128 }
+                } else null
         } ?: return null
 
         return thumbCache.put(cacheKey, bytes)
+    }
+
+    suspend fun deletePhoto(photo: CameraPhoto): Result<Unit> {
+        return if (isMockMode) {
+            delay(80)
+            if (mockRepo.deletePhoto(photo)) Result.success(Unit)
+            else Result.failure(IllegalStateException("模拟卡中未找到该照片"))
+        } else {
+            apiClient.deletePhoto(photo)
+        }
     }
 
     fun getCachedPreview(photo: CameraPhoto): Bitmap? {

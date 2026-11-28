@@ -44,10 +44,13 @@ import androidx.compose.material.icons.rounded.Layers
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SelectAll
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.Wifi
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -57,6 +60,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.launch
@@ -112,6 +117,10 @@ fun GalleryScreen(viewModel: MainViewModel) {
     val isGeneratingCollage by viewModel.isGeneratingCollage.collectAsState()
     val tetherEnabled by viewModel.tetherEnabled.collectAsState()
     val wmState by viewModel.watermarkState.collectAsState()
+    val showRejected by viewModel.showRejectedFilter.collectAsState()
+    val rejectedCount by viewModel.rejectedCount.collectAsState()
+    val isDeleting by viewModel.isDeletingPhotos.collectAsState()
+    var showBatchDeleteDialog by remember { mutableStateOf(false) }
 
     BackHandler(enabled = selectedIds.isNotEmpty()) { viewModel.clearSelection() }
 
@@ -279,6 +288,31 @@ fun GalleryScreen(viewModel: MainViewModel) {
                                     fontSize = 10.sp,
                                     fontWeight = if (starredOnly) FontWeight.Bold else FontWeight.Normal
                                 )
+                            }
+                            if (rejectedCount > 0 || showRejected) {
+                                Row(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (showRejected) PentaxRed.copy(alpha = 0.20f) else ObsidianBg)
+                                        .border(0.5.dp, if (showRejected) PentaxRed else HairlineBorder, RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.toggleShowRejectedFilter() }
+                                        .padding(horizontal = 7.dp, vertical = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Rounded.DeleteOutline,
+                                        contentDescription = "废片箱",
+                                        tint = if (showRejected) PentaxRed else InkSecondary,
+                                        modifier = Modifier.size(12.dp)
+                                    )
+                                    Spacer(Modifier.width(2.dp))
+                                    Text(
+                                        text = "废片 $rejectedCount",
+                                        color = if (showRejected) PentaxRed else InkSecondary,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (showRejected) FontWeight.Bold else FontWeight.Normal
+                                    )
+                                }
                             }
                             // RAW+JPG Merge Toggle Chip
                             Row(
@@ -511,6 +545,21 @@ fun GalleryScreen(viewModel: MainViewModel) {
                             Spacer(Modifier.width(3.dp))
                             Text(if (wmState.batchProgress != null) "出片中" else "批量暗房", color = PentaxGreen, fontSize = 11.sp, fontWeight = FontWeight.Bold)
                         }
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(9.dp))
+                                .background(PentaxRed.copy(alpha = 0.16f))
+                                .border(0.6.dp, PentaxRed, RoundedCornerShape(9.dp))
+                                .clickable(enabled = !isDeleting) { showBatchDeleteDialog = true }
+                                .padding(vertical = 7.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(Icons.Rounded.DeleteOutline, null, tint = PentaxRed, modifier = Modifier.size(14.dp))
+                            Spacer(Modifier.width(3.dp))
+                            Text(if (showRejected) "恢复/删卡" else "标废/删卡", color = PentaxRed, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        }
                         if (selectedIds.size >= 2) {
                             if (selectedIds.size == 2) {
                                 Row(
@@ -565,6 +614,75 @@ fun GalleryScreen(viewModel: MainViewModel) {
                     }
                 }
             }
+        }
+
+        if (showBatchDeleteDialog && selectedIds.isNotEmpty()) {
+            val chosenList = photos.filter { selectedIds.contains(it.uniqueId) }
+            AlertDialog(
+                onDismissRequest = { showBatchDeleteDialog = false },
+                containerColor = ElevatedSurface,
+                title = {
+                    Text(
+                        text = "批量处理已选 ${chosenList.size} 张照片",
+                        color = InkPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "「标记废片隐藏」不会改动 SD 卡数据且随时可恢复；「删除机身 SD 卡文件」会向 K-1 发送删除指令（含伴生 RAW）。",
+                            color = InkSecondary,
+                            fontSize = 12.sp
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(WarmAmber.copy(alpha = 0.16f))
+                                .border(0.6.dp, WarmAmber, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    showBatchDeleteDialog = false
+                                    viewModel.rejectSelectedPhotos()
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = if (showRejected) "取消废片标记（恢复 ${chosenList.size} 张至图库）" else "标记 ${chosenList.size} 张为废片并隐藏（安全）",
+                                color = WarmAmber,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(PentaxRed.copy(alpha = 0.16f))
+                                .border(0.6.dp, PentaxRed, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    showBatchDeleteDialog = false
+                                    viewModel.deleteCameraPhotos(chosenList, includeCompanionRaw = true)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "尝试永久删除机身 SD 卡中 ${chosenList.size} 张原文件",
+                                color = PentaxRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showBatchDeleteDialog = false }) {
+                        Text("取消", color = InkSecondary)
+                    }
+                }
+            )
         }
     }
 }

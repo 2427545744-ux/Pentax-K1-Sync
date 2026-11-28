@@ -88,6 +88,7 @@ data class CameraPhoto(
     val isRaw: Boolean,
     val isDownloaded: Boolean = false,
     val isStarred: Boolean = false,
+    val isRejected: Boolean = false,
     val sortKey: Long = 0L,
     val exif: PhotoExif? = null,
     val companionRaw: CameraPhoto? = null

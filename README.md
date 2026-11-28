@@ -1,4 +1,4 @@
-# Pentax K-1 Sync v7.5.1
+# Pentax Lab v7.6.0
 
 专为 **PENTAX K-1（一代）** 打造的原生 Android 图传、无线遥控与 SpektraLab 81 波长物理暗房客户端（Kotlin + Jetpack Compose + C++20 JNI + Vulkan Compute + LibRaw 0.22.2）。
 
@@ -138,3 +138,12 @@
 ## v7.5.1 编译修复
 - 修复 `PentaxK1ApiClient.kt` 中 `streamLiveView()` 函数签名遗漏 `preferRgb565` 参数导致的 Kotlin 编译错误。
 - 补齐 `SyncScreen.kt` 连接状态栏的实时 Wi-Fi 链路遥测展示（频段 / Mbps / dBm），并让批量暗房与原分辨率导出拉图同步遵循所选传输引擎模式。
+
+## v7.6.0 品牌升级 Pentax Lab · 暗房直方图校准 · 选图预览与删片工作流
+- **品牌焕新与新图标**：软件正式更名为 **Pentax Lab**，全新设计 **K-1 军舰部棱镜徽章** 自适应矢量图标（哑光钛灰金属斜切底 + K-1 五棱镜经典硬朗切角轮廓 + 中央 SMC 翠绿镀膜光学镜环 + K 口红点）。
+- **彻底解决 JPG & RAW 暗房直方图左偏**：
+  - JPG 恢复干净标准 sRGB 直通（`input_cctf_decoding = true`），默认关闭发闷的观片眩光（`glareActive = false`）；
+  - 在 `spektra_jni.cpp` 中引入 **阴影锚定 + 保色相屏幕通透校准 (`display_tone_calibrate`)**（按胶片卷/相纸组合锁定校准参数，不干扰手动曝光/相纸亮度滑块，36.4MP 全分辨率分带导出与预览 100% 一致，并支持暗房顶部一键切换 `通透 ✓ / 原始密度`）；
+  - 暗房直方图改算纯净无水印的 `gradedNoWatermarkBitmap`，并增加极端黑/白边缘尖峰防压扁归一化。
+- **后期选 RAW + 星标精选预览修复**：选图面板改用全库自动配对数据源（不受图库筛选截断），自动复用伴生 JPG 缩略图并为独立 RAW 增加 `?size=view` 缩略图兜底，每个格子底部常驻显示文件名与 RAW/星标标识。
+- **机身删片 & 快速标废工作流**：大图详情页与图库多选栏新增 **标废 / 删卡** 入口（带二次防误删确认，支持 `HTTP DELETE` 远程删除机身 SD 卡照片含伴生 RAW，并在 K-1 固件拒绝时提供 100% 可用的「标废隐藏 + 废片栏恢复」极速筛片流）。

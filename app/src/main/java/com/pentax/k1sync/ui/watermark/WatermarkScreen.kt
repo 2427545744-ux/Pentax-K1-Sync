@@ -122,7 +122,7 @@ private enum class StudioPanelTab(val label: String) {
 fun WatermarkScreen(viewModel: MainViewModel) {
     val state by viewModel.watermarkState.collectAsState()
     val cameraInfo by viewModel.cameraInfo.collectAsState()
-    val cameraPhotos by viewModel.displayPhotos.collectAsState()
+    val cameraPhotos by viewModel.studioPickerPhotos.collectAsState()
     val lensPresets by viewModel.lensPresets.collectAsState()
     val manualLensFocalMap by viewModel.manualLensFocalMap.collectAsState()
     val darkroomRecipes by viewModel.darkroomRecipes.collectAsState()
@@ -615,6 +615,21 @@ fun WatermarkScreen(viewModel: MainViewModel) {
                                                 Icon(Icons.Rounded.AutoAwesome, null, tint = PentaxGreen, modifier = Modifier.size(12.dp))
                                                 Spacer(Modifier.width(3.dp))
                                                 Text(if (state.spektraSolving) "校准中" else "自动曝光", color = PentaxGreen, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+                                            }
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(8.dp))
+                                                    .background(if (spk.displayToneCalibrate) PentaxGreen.copy(alpha = 0.18f) else ObsidianBg)
+                                                    .border(0.5.dp, if (spk.displayToneCalibrate) PentaxGreen else HairlineBorder, RoundedCornerShape(8.dp))
+                                                    .clickable { viewModel.toggleSpektraDisplayCalibrate() }
+                                                    .padding(horizontal = 6.dp, vertical = 5.dp)
+                                            ) {
+                                                Text(
+                                                    if (spk.displayToneCalibrate) "通透 ✓" else "原始密度",
+                                                    color = if (spk.displayToneCalibrate) PentaxGreen else InkSecondary,
+                                                    fontSize = 10.sp,
+                                                    fontWeight = FontWeight.Medium
+                                                )
                                             }
                                             Box(
                                                 modifier = Modifier

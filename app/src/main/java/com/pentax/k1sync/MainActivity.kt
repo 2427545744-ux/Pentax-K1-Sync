@@ -180,7 +180,7 @@ fun K1SyncRootScreen(viewModel: MainViewModel = viewModel()) {
                 activityRef?.finish()
             } else {
                 lastBackPressMs = now
-                viewModel.showToast("再按一次返回键退出 Pentax K-1 Sync")
+                viewModel.showToast("再按一次返回键退出 Pentax Lab")
             }
         }
     }

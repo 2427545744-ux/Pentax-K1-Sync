@@ -37,9 +37,12 @@ import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.RawOn
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -107,6 +110,8 @@ fun PhotoDetailOverlay(viewModel: MainViewModel) {
 
     var immersiveHideHud by remember { mutableStateOf(false) }
     var expandFullInfo by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    val isDeleting by viewModel.isDeletingPhotos.collectAsState()
     var activePageZoomed by remember { mutableStateOf(false) }
     var dismissDragY by remember { mutableFloatStateOf(0f) }
 
@@ -190,6 +195,19 @@ fun PhotoDetailOverlay(viewModel: MainViewModel) {
                             }
                         }
                     }
+                }
+
+                IconButton(
+                    onClick = { showDeleteDialog = true },
+                    enabled = !isDeleting,
+                    modifier = Modifier.size(38.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.DeleteOutline,
+                        contentDescription = "删除或标废",
+                        tint = if (currentPhoto.isRejected) PentaxRed else InkSecondary,
+                        modifier = Modifier.size(21.dp)
+                    )
                 }
 
                 // ★ Star / Favorite Rating Toggle
@@ -405,6 +423,75 @@ fun PhotoDetailOverlay(viewModel: MainViewModel) {
                     ) { viewModel.sendPhotoToWatermarkStudio(currentPhoto) }
                 }
             }
+        }
+
+        if (showDeleteDialog) {
+            val compSuffix = if (currentPhoto.hasRawCompanion) "（含伴生 ${currentPhoto.companionRaw?.file}）" else ""
+            AlertDialog(
+                onDismissRequest = { showDeleteDialog = false },
+                containerColor = ElevatedSurface,
+                title = {
+                    Text(
+                        text = "处理废片 · ${currentPhoto.file}",
+                        color = InkPrimary,
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            text = "可选择「标记废片隐藏」（安全且随时可恢复，批量传图自动跳过），或尝试「永久删除机身卡内文件」$compSuffix。",
+                            color = InkSecondary,
+                            fontSize = 12.sp
+                        )
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(WarmAmber.copy(alpha = 0.16f))
+                                .border(0.6.dp, WarmAmber, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    showDeleteDialog = false
+                                    viewModel.togglePhotoReject(currentPhoto, closeDetailIfEmpty = true)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = if (currentPhoto.isRejected) "取消废片标记（恢复至正常图库）" else "标记为废片并隐藏（推荐 · 安全筛片）",
+                                color = WarmAmber,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(PentaxRed.copy(alpha = 0.16f))
+                                .border(0.6.dp, PentaxRed, RoundedCornerShape(10.dp))
+                                .clickable {
+                                    showDeleteDialog = false
+                                    viewModel.deleteCameraPhotos(listOf(currentPhoto), includeCompanionRaw = true)
+                                }
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "尝试永久删除机身 SD 卡文件（不可恢复）",
+                                color = PentaxRed,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                    }
+                },
+                confirmButton = {},
+                dismissButton = {
+                    TextButton(onClick = { showDeleteDialog = false }) {
+                        Text("取消", color = InkSecondary)
+                    }
+                }
+            )
         }
     }
 }

@@ -229,6 +229,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _undownloadedOnlyFilter = MutableStateFlow(false)
     val undownloadedOnlyFilter: StateFlow<Boolean> = _undownloadedOnlyFilter.asStateFlow()
 
+    private val _showRejectedFilter = MutableStateFlow(false)
+    val showRejectedFilter: StateFlow<Boolean> = _showRejectedFilter.asStateFlow()
+
+    private val _rejectedCount = MutableStateFlow(0)
+    val rejectedCount: StateFlow<Int> = _rejectedCount.asStateFlow()
+
+    private val _isDeletingPhotos = MutableStateFlow(false)
+    val isDeletingPhotos: StateFlow<Boolean> = _isDeletingPhotos.asStateFlow()
+
+    private val _studioPickerPhotos = MutableStateFlow<List<CameraPhoto>>(emptyList())
+    val studioPickerPhotos: StateFlow<List<CameraPhoto>> = _studioPickerPhotos.asStateFlow()
+
     private val _starredCount = MutableStateFlow(0)
     val starredCount: StateFlow<Int> = _starredCount.asStateFlow()
 
@@ -440,6 +452,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     @Volatile private var spektraSessionSourceKey: String = ""
     @Volatile private var lastAppliedSpektraParams: SpektraDarkroomParams? = null
     @Volatile private var spektraHasRenderedLive: Boolean = false
+    @Volatile private var lastSpektraCalKey: String = ""
     // Fast pre-tone cropped cache so dragging PS Color Grading / Watermark sliders runs in ~20ms without re-running Vulkan!
     private var cachedPreToneKey: String = ""
     private var cachedPreToneBitmap: Bitmap? = null
@@ -784,6 +797,128 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         recomputeDisplayPhotos()
     }
 
+    fun toggleShowRejectedFilter() {
+        _showRejectedFilter.value = !_showRejectedFilter.value
+        _selectedPhotoIds.value = emptySet()
+        recomputeDisplayPhotos()
+    }
+
+    fun togglePhotoReject(photo: CameraPhoto, closeDetailIfEmpty: Boolean = false) {
+        val ids = buildList {
+            add(photo.uniqueId)
+            photo.companionRaw?.let { add(it.uniqueId) }
+        }
+        val nowRejected = repo.favoriteStore.toggleReject(ids)
+        fun matchPhoto(p: CameraPhoto): Boolean =
+            ids.contains(p.uniqueId) || (p.companionRaw != null && ids.contains(p.companionRaw.uniqueId))
+
+        _rawPhotos.update { list ->
+            list.map { p -> if (matchPhoto(p)) p.copy(isRejected = nowRejected) else p }
+        }
+        _detailPhotos.update { list ->
+            if (nowRejected && !_showRejectedFilter.value) list.filterNot { matchPhoto(it) }
+            else list.map { p -> if (matchPhoto(p)) p.copy(isRejected = nowRejected) else p }
+        }
+        _comparePhotos.update { pair ->
+            pair?.let { (a, b) ->
+                (if (matchPhoto(a)) a.copy(isRejected = nowRejected) else a) to
+                    (if (matchPhoto(b)) b.copy(isRejected = nowRejected) else b)
+            }
+        }
+        if (nowRejected) {
+            _selectedPhotoIds.update { it - ids.toSet() }
+        }
+        recomputeDisplayPhotos()
+        if (closeDetailIfEmpty && _detailPhotos.value.isEmpty()) {
+            closePhotoDetail()
+        }
+        showToast(if (nowRejected) "已标记废片并隐藏（可在图库「废片」栏恢复）" else "已取消废片标记，恢复至图库")
+    }
+
+    fun rejectSelectedPhotos() {
+        val ids = _selectedPhotoIds.value
+        val chosen = _displayPhotos.value.filter { ids.contains(it.uniqueId) }
+        if (chosen.isEmpty()) return
+        val allIds = mutableSetOf<String>()
+        chosen.forEach { p ->
+            allIds += p.uniqueId
+            p.companionRaw?.let { allIds += it.uniqueId }
+        }
+        val restoring = _showRejectedFilter.value
+        if (restoring) {
+            repo.favoriteStore.removeRejected(allIds)
+        } else {
+            repo.favoriteStore.addRejected(allIds)
+        }
+        _rawPhotos.update { list ->
+            list.map { p -> if (allIds.contains(p.uniqueId)) p.copy(isRejected = !restoring) else p }
+        }
+        _selectedPhotoIds.value = emptySet()
+        recomputeDisplayPhotos()
+        showToast(if (restoring) "已恢复 ${chosen.size} 张照片至正常图库" else "已将 ${chosen.size} 张标为废片并隐藏")
+    }
+
+    fun restoreAllRejectedPhotos() {
+        repo.favoriteStore.clearAllRejected()
+        _rawPhotos.update { list -> list.map { it.copy(isRejected = false) } }
+        _showRejectedFilter.value = false
+        recomputeDisplayPhotos()
+        showToast("已恢复全部已标废的照片")
+    }
+
+    fun deleteCameraPhotos(photos: List<CameraPhoto>, includeCompanionRaw: Boolean = true) {
+        if (photos.isEmpty() || _isDeletingPhotos.value) return
+        viewModelScope.launch {
+            _isDeletingPhotos.value = true
+            var deletedCount = 0
+            var firstError: String? = null
+            val removedIds = mutableSetOf<String>()
+            try {
+                for (photo in photos) {
+                    val targets = buildList {
+                        add(photo)
+                        if (includeCompanionRaw && photo.companionRaw != null) add(photo.companionRaw)
+                    }
+                    var anyDeletedForGroup = false
+                    for (t in targets) {
+                        val res = repo.deletePhoto(t)
+                        if (res.isSuccess) {
+                            removedIds += t.uniqueId
+                            anyDeletedForGroup = true
+                        } else if (firstError == null) {
+                            firstError = res.exceptionOrNull()?.localizedMessage ?: "删除失败"
+                        }
+                    }
+                    if (anyDeletedForGroup) deletedCount++
+                    if (deletedCount == 0 && firstError != null && firstError!!.contains("未开放")) break
+                }
+
+                if (removedIds.isNotEmpty()) {
+                    repo.favoriteStore.removeStarred(removedIds)
+                    repo.favoriteStore.removeRejected(removedIds)
+                    _rawPhotos.update { list -> list.filterNot { removedIds.contains(it.uniqueId) } }
+                    _detailPhotos.update { list ->
+                        list.filterNot { removedIds.contains(it.uniqueId) || (it.companionRaw != null && removedIds.contains(it.companionRaw.uniqueId)) }
+                    }
+                    _comparePhotos.update { pair ->
+                        if (pair != null && (removedIds.contains(pair.first.uniqueId) || removedIds.contains(pair.second.uniqueId))) null else pair
+                    }
+                    _selectedPhotoIds.update { it - removedIds }
+                    recomputeDisplayPhotos()
+                    if (_detailPhotos.value.isEmpty()) closePhotoDetail()
+                }
+
+                when {
+                    deletedCount == photos.size -> showToast("已从机身存储卡永久删除 $deletedCount 张照片")
+                    deletedCount > 0 -> showToast("已删除 $deletedCount/${photos.size} 张；部分失败：${firstError.orEmpty()}")
+                    else -> showToast(firstError ?: "机身删除失败")
+                }
+            } finally {
+                _isDeletingPhotos.value = false
+            }
+        }
+    }
+
     fun togglePhotoStar(photo: CameraPhoto) {
         val nowStarred = repo.favoriteStore.toggleStar(photo.uniqueId)
         val companionId = photo.companionRaw?.uniqueId
@@ -916,39 +1051,48 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun buildPairedPhotoList(source: List<CameraPhoto>): List<CameraPhoto> {
+        val byBaseKey = LinkedHashMap<String, MutableList<CameraPhoto>>()
+        for (p in source) {
+            val key = "${p.dateGroup}/${p.baseName}"
+            byBaseKey.getOrPut(key) { mutableListOf() }.add(p)
+        }
+        return byBaseKey.values.map { group ->
+            val jpg = group.firstOrNull { !it.isRaw }
+            val raw = group.firstOrNull { it.isRaw }
+            when {
+                jpg != null && raw != null -> jpg.copy(
+                    companionRaw = raw,
+                    isDownloaded = jpg.isDownloaded || raw.isDownloaded,
+                    isStarred = jpg.isStarred || raw.isStarred,
+                    isRejected = jpg.isRejected || raw.isRejected,
+                    sortKey = maxOf(jpg.sortKey, raw.sortKey)
+                )
+                jpg != null -> jpg
+                else -> group.first()
+            }
+        }.sortedByDescending { it.sortKey }
+    }
+
     private fun recomputeDisplayPhotos() {
+        val allSorted = _rawPhotos.value.sortedByDescending { it.sortKey }
+        val allPaired = buildPairedPhotoList(allSorted)
+        _studioPickerPhotos.value = allPaired.filter { !it.isRejected }
+
         val slotFilter = _activeSlot.value
         val rawList = when (slotFilter) {
-            GallerySlotFilter.ALL -> _rawPhotos.value
-            GallerySlotFilter.SD1 -> _rawPhotos.value.filter { it.slot == StorageSlot.SD1 }
-            GallerySlotFilter.SD2 -> _rawPhotos.value.filter { it.slot == StorageSlot.SD2 }
-        }.sortedByDescending { it.sortKey }
+            GallerySlotFilter.ALL -> allSorted
+            GallerySlotFilter.SD1 -> allSorted.filter { it.slot == StorageSlot.SD1 }
+            GallerySlotFilter.SD2 -> allSorted.filter { it.slot == StorageSlot.SD2 }
+        }
 
         val filter = _formatFilter.value
         val paired = _pairRawJpg.value
         val starredOnly = _starredOnlyFilter.value
+        val showRejected = _showRejectedFilter.value
 
-        val mergedList = if (paired && filter == PhotoFormatFilter.ALL) {
-            val byBaseKey = LinkedHashMap<String, MutableList<CameraPhoto>>()
-            for (p in rawList) {
-                // Pair same-day & same-filename RAW+JPG even across SD1(JPG) + SD2(RAW)!
-                val key = "${p.dateGroup}/${p.baseName}"
-                byBaseKey.getOrPut(key) { mutableListOf() }.add(p)
-            }
-            byBaseKey.values.map { group ->
-                val jpg = group.firstOrNull { !it.isRaw }
-                val raw = group.firstOrNull { it.isRaw }
-                when {
-                    jpg != null && raw != null -> jpg.copy(
-                        companionRaw = raw,
-                        isDownloaded = jpg.isDownloaded || raw.isDownloaded,
-                        isStarred = jpg.isStarred || raw.isStarred,
-                        sortKey = maxOf(jpg.sortKey, raw.sortKey)
-                    )
-                    jpg != null -> jpg
-                    else -> group.first()
-                }
-            }.sortedByDescending { it.sortKey }
+        val mergedAll = if (paired && filter == PhotoFormatFilter.ALL) {
+            buildPairedPhotoList(rawList)
         } else {
             when (filter) {
                 PhotoFormatFilter.ALL -> rawList
@@ -957,20 +1101,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
         }
 
+        _rejectedCount.value = mergedAll.count { it.isRejected }
+        val afterReject = if (showRejected) {
+            mergedAll.filter { it.isRejected }
+        } else {
+            mergedAll.filter { !it.isRejected }
+        }
+
         val undownloadedOnly = _undownloadedOnlyFilter.value
-        _starredCount.value = mergedList.count { it.isStarred }
-        _undownloadedCount.value = mergedList.count { !it.isDownloaded }
-        val afterStar = if (starredOnly) mergedList.filter { it.isStarred } else mergedList
+        _starredCount.value = afterReject.count { it.isStarred }
+        _undownloadedCount.value = afterReject.count { !it.isDownloaded }
+        val afterStar = if (starredOnly) afterReject.filter { it.isStarred } else afterReject
         val finalDisplay = if (undownloadedOnly) afterStar.filter { !it.isDownloaded } else afterStar
         _displayPhotos.value = finalDisplay
-
-        val updatedById = mergedList.associateBy { it.uniqueId }
-        if (_detailOpen.value) {
-            _detailPhotos.update { cur -> cur.map { updatedById[it.uniqueId] ?: it } }
-        }
-        _comparePhotos.value?.let { (a, b) ->
-            _comparePhotos.value = (updatedById[a.uniqueId] ?: a) to (updatedById[b.uniqueId] ?: b)
-        }
     }
 
     private fun putThumbnailLru(id: String, bmp: Bitmap) {
@@ -1435,7 +1578,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun enqueueOnlyUndownloaded() {
-        val undownloaded = _displayPhotos.value.filter { !it.isDownloaded }
+        val undownloaded = _displayPhotos.value.filter { !it.isDownloaded && !it.isRejected }
         if (undownloaded.isEmpty()) { showToast("当前列表照片已全部同步完毕"); return }
         enqueueDownload(undownloaded, _defaultQuality.value)
     }
@@ -1801,7 +1944,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val next = !_showStudioHistogram.value
         _showStudioHistogram.value = next
         if (next) {
-            _watermarkState.value.previewBitmap?.let { computeStudioHistogram(it) }
+            (_watermarkState.value.gradedNoWatermarkBitmap ?: _watermarkState.value.previewBitmap)?.let { computeStudioHistogram(it) }
         } else {
             _studioHistogram.value = null
         }
@@ -2299,6 +2442,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         spektraSessionSourceKey = ""
         lastAppliedSpektraParams = null
         spektraHasRenderedLive = false
+        lastSpektraCalKey = ""
         invalidatePreToneCache()
         if (h != 0L && SpektraNativeBridge.isNativeLibraryLoaded) {
             SpektraNativeBridge.nativeCloseSession(h)
@@ -2358,6 +2502,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         spektraSessionSourceKey = desiredKey
         lastAppliedSpektraParams = p
         spektraHasRenderedLive = false
+        lastSpektraCalKey = ""
 
         val srcTag = if (state.isRawSource) "14-bit RAW 高速预览" else "JPG 线性还原"
         _watermarkState.update {
@@ -2736,6 +2881,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun toggleSpektraDisplayCalibrate() {
+        recordStudioHistory()
+        val next = !_watermarkState.value.spektraParams.displayToneCalibrate
+        lastSpektraCalKey = ""
+        _watermarkState.update { st ->
+            st.copy(
+                spektraParams = st.spektraParams.copy(displayToneCalibrate = next),
+                fullscreenHighResBitmap = null
+            )
+        }
+        triggerWatermarkPreview(0L)
+        showToast(if (next) "已开启暗房屏幕通透校准（自动修正相纸左偏，保持色相不变）" else "已切换为原始光学相纸密度输出")
+    }
+
     fun resetSpektraToFactoryColor() {
         recordStudioHistory()
         releaseSpektraSession()
@@ -3108,7 +3267,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val previewBmp = SpektraNativeBridge.nativeDecodeRawPreview(state.sourceRawPath, exportMaxEdgeOverride)
                     if (previewBmp != null) {
                         try {
-                            SpektraNativeBridge.nativeRenderBitmapFullTiled(previewBmp, paramsJson)
+                            SpektraNativeBridge.nativeRenderBitmapFullTiled(previewBmp, paramsJson, p.displayToneCalibrate)
                         } finally {
                             previewBmp.recycle()
                         }
@@ -3121,7 +3280,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         useCustomWb = p.rawCustomWb,
                         tempKelvin = p.rawTempKelvin.toDouble(),
                         tint = p.rawTint.toDouble(),
-                        paramsJson = paramsJson
+                        paramsJson = paramsJson,
+                        displayCalibrate = p.displayToneCalibrate
                     )
                 }
                 _watermarkState.update {
@@ -3146,7 +3306,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     it.copy(spektraStatusText = "81 波长全分辨率分带渲染中 (${targetBmp.width}×${targetBmp.height})...")
                 }
                 val outBmp = try {
-                    SpektraNativeBridge.nativeRenderBitmapFullTiled(targetBmp, paramsJson)
+                    SpektraNativeBridge.nativeRenderBitmapFullTiled(targetBmp, paramsJson, p.displayToneCalibrate)
                 } finally {
                     if (targetBmp !== baseBmp) targetBmp.recycle()
                     _watermarkState.update {
@@ -3181,7 +3341,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         lastAppliedSpektraParams = params
 
-        val bmp = SpektraNativeBridge.nativeRenderToBitmap(handle, "live", reprintOnly = printOnlyDelta)
+        val calKey = "${params.filmStockId}|${params.printStockId}|${params.scanFilm}|${params.displayToneCalibrate}"
+        val shouldResetCal = (calKey != lastSpektraCalKey)
+        val bmp = SpektraNativeBridge.nativeRenderToBitmap(
+            handle = handle,
+            tier = "live",
+            reprintOnly = printOnlyDelta,
+            displayCalibrate = params.displayToneCalibrate,
+            resetCal = shouldResetCal
+        )
+        if (bmp != null) {
+            lastSpektraCalKey = calKey
+        }
         if (bmp != null) {
             spektraHasRenderedLive = true
             if (!printOnlyDelta) {
@@ -3324,8 +3495,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     isRendering = false
                 )
             }
-            if (newPreview != null && _showStudioHistogram.value) {
-                computeStudioHistogram(newPreview)
+            val histTarget = _watermarkState.value.gradedNoWatermarkBitmap ?: newPreview
+            if (histTarget != null && _showStudioHistogram.value) {
+                computeStudioHistogram(histTarget)
             }
         }
     }
@@ -3358,7 +3530,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun stepStudioCameraPhoto(delta: Int) {
         val curPhoto = _watermarkState.value.sourceCameraPhoto ?: return
-        val list = _displayPhotos.value
+        val list = _studioPickerPhotos.value.ifEmpty { _displayPhotos.value }
         if (list.size < 2) return
         val idx = list.indexOfFirst { it.uniqueId == curPhoto.uniqueId }
         if (idx == -1) return
@@ -3424,7 +3596,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
                         val working = if (maxEdge != null) scaleBitmapToMaxEdge(bmp, maxEdge) else bmp
                         val graded: Bitmap = if (useSpektra) {
-                            SpektraNativeBridge.nativeRenderBitmapFullTiled(working, spektraJson) ?: working
+                            SpektraNativeBridge.nativeRenderBitmapFullTiled(working, spektraJson, state.spektraParams.displayToneCalibrate) ?: working
                         } else {
                             CubeLutEngine.applyLut(working, lutPreset, lutIntensity)
                         }
@@ -3497,7 +3669,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     val working = if (maxEdge != null) scaleBitmapToMaxEdge(bmp, maxEdge) else bmp
                     val graded: Bitmap = if (useSpektra) {
                         // Uses overlapped-band full-resolution tiled renderer: zero black-half bug & full resolution!
-                        SpektraNativeBridge.nativeRenderBitmapFullTiled(working, spektraJson) ?: working
+                        SpektraNativeBridge.nativeRenderBitmapFullTiled(working, spektraJson, state.spektraParams.displayToneCalibrate) ?: working
                     } else {
                         CubeLutEngine.applyLut(working, lutPreset, lutIntensity)
                     }

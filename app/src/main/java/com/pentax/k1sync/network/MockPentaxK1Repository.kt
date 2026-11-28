@@ -100,6 +100,11 @@ class MockPentaxK1Repository {
         return currentParams
     }
 
+    fun deletePhoto(photo: CameraPhoto): Boolean {
+        val list = if (photo.slot == StorageSlot.SD1) sd1Photos else sd2Photos
+        return list.removeAll { it.dir == photo.dir && it.file == photo.file }
+    }
+
     fun listPhotos(slot: StorageSlot): List<CameraPhoto> {
         val raw = if (slot == StorageSlot.SD1) sd1Photos else sd2Photos
         return raw.map { p ->

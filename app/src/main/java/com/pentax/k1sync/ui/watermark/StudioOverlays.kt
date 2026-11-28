@@ -76,6 +76,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pentax.k1sync.image.CropStraightenConfig
@@ -642,7 +643,7 @@ internal fun StudioCameraPickerOverlay(
 
     BackHandler { viewModel.closeStudioCameraPicker() }
 
-    val allPhotos by viewModel.displayPhotos.collectAsState()
+    val allPhotos by viewModel.studioPickerPhotos.collectAsState()
     val thumbnails by viewModel.thumbnails.collectAsState()
     var starredOnly by remember(mode) { mutableStateOf(false) }
     var selectedBatchIds by remember(mode) { mutableStateOf(emptySet<String>()) }
@@ -794,8 +795,9 @@ internal fun StudioCameraPickerOverlay(
             ) {
                 gridItems(filteredPhotos, key = { it.uniqueId }) { photo ->
                     val bmp = thumbnails[photo.uniqueId]
+                        ?: photo.companionRaw?.let { thumbnails[it.uniqueId] }
                     val isSelected = selectedBatchIds.contains(photo.uniqueId)
-                    LaunchedEffect(photo.uniqueId) {
+                    LaunchedEffect(photo.uniqueId, starredOnly, mode) {
                         if (bmp == null) viewModel.requestThumbnail(photo)
                     }
                     Box(
@@ -820,7 +822,30 @@ internal fun StudioCameraPickerOverlay(
                             )
                         } else {
                             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.PhotoLibrary, null, tint = InkSecondary.copy(alpha = 0.35f), modifier = Modifier.size(22.dp))
+                                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                    Icon(Icons.Rounded.PhotoLibrary, null, tint = InkSecondary.copy(alpha = 0.45f), modifier = Modifier.size(20.dp))
+                                    Text(
+                                        text = photo.baseName,
+                                        color = InkSecondary,
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                        if (photo.isStarred) {
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.TopStart)
+                                    .padding(4.dp)
+                                    .size(16.dp)
+                                    .clip(CircleShape)
+                                    .background(Color(0xB8000000)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Rounded.Star, null, tint = WarmAmber, modifier = Modifier.size(10.dp))
                             }
                         }
 
@@ -844,15 +869,25 @@ internal fun StudioCameraPickerOverlay(
                             }
                         }
 
-                        if (photo.hasAnyRaw) {
-                            Box(
-                                modifier = Modifier
-                                    .align(Alignment.BottomStart)
-                                    .padding(4.dp)
-                                    .clip(RoundedCornerShape(4.dp))
-                                    .background(Color(0xCC0B0B0D))
-                                    .padding(horizontal = 4.dp, vertical = 1.dp)
-                            ) {
+                        Row(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .fillMaxWidth()
+                                .background(Color(0xB80B0B0D))
+                                .padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = photo.baseName,
+                                color = Color.White,
+                                fontSize = 8.sp,
+                                fontFamily = FontFamily.Monospace,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                            if (photo.hasAnyRaw) {
                                 Text(
                                     text = if (photo.hasRawCompanion) "R+J" else "RAW",
                                     color = WarmAmber,

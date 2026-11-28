@@ -15,7 +15,7 @@ object HistogramCalculator {
         val scaled = Bitmap.createScaledBitmap(bitmap, sampleW, sampleH, false)
         val pixels = IntArray(sampleW * sampleH)
         scaled.getPixels(pixels, 0, sampleW, 0, 0, sampleW, sampleH)
-        if (scaled != bitmap) scaled.recycle()
+        if (scaled !== bitmap) scaled.recycle()
 
         val luma = IntArray(bins)
         val red = IntArray(bins)
@@ -34,16 +34,25 @@ object HistogramCalculator {
             blue[(b * scale).toInt()]++
         }
 
-        val maxVal = max(
-            max(luma.maxOrNull() ?: 1, red.maxOrNull() ?: 1),
-            max(green.maxOrNull() ?: 1, blue.maxOrNull() ?: 1)
-        ).coerceAtLeast(1).toFloat()
+        var interiorMax = 1
+        for (i in 1 until (bins - 1)) {
+            interiorMax = max(interiorMax, max(max(luma[i], red[i]), max(green[i], blue[i])))
+        }
+        val edgeMax = max(
+            max(max(luma[0], red[0]), max(green[0], blue[0])),
+            max(max(luma[bins - 1], red[bins - 1]), max(green[bins - 1], blue[bins - 1]))
+        )
+        val normMax = if (interiorMax > 4) {
+            max(interiorMax, edgeMax / 3).coerceAtLeast(1).toFloat()
+        } else {
+            max(interiorMax, edgeMax).coerceAtLeast(1).toFloat()
+        }
 
         HistogramData(
-            luma = FloatArray(bins) { luma[it] / maxVal },
-            red = FloatArray(bins) { red[it] / maxVal },
-            green = FloatArray(bins) { green[it] / maxVal },
-            blue = FloatArray(bins) { blue[it] / maxVal }
+            luma = FloatArray(bins) { (luma[it] / normMax).coerceIn(0f, 1f) },
+            red = FloatArray(bins) { (red[it] / normMax).coerceIn(0f, 1f) },
+            green = FloatArray(bins) { (green[it] / normMax).coerceIn(0f, 1f) },
+            blue = FloatArray(bins) { (blue[it] / normMax).coerceIn(0f, 1f) }
         )
     }
 }
